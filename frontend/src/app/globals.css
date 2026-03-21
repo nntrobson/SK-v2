@@ -1,0 +1,104 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+}
+
+@custom-variant dark (&:is(.dark *));
+
+@layer base {
+  :root {
+    --background: #0f172a; /* Slate 900 base */
+    --foreground: #f8fafc; /* Slate 50 text */
+    
+    --card: rgba(30, 41, 59, 0.4); /* Glass slate 800 */
+    --card-foreground: #f8fafc;
+    
+    --popover: #0f172a;
+    --popover-foreground: #f8fafc;
+    
+    --primary: #3b82f6; /* Blue 500 */
+    --primary-foreground: #ffffff;
+    
+    --secondary: #334155; /* Slate 700 */
+    --secondary-foreground: #f8fafc;
+    
+    --muted: #1e293b; /* Slate 800 */
+    --muted-foreground: #94a3b8; /* Slate 400 */
+    
+    --accent: #0ea5e9; /* Sky 500 */
+    --accent-foreground: #ffffff;
+    
+    --destructive: #ef4444; /* Red 500 */
+    --destructive-foreground: #f8fafc;
+    
+    --border: rgba(255, 255, 255, 0.1);
+    --input: rgba(255, 255, 255, 0.05);
+    --ring: rgba(59, 130, 246, 0.5);
+    
+    --radius: 1rem;
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    /* Subtle radial gradient background for premium feel */
+    background-image: 
+      radial-gradient(ellipse at top right, rgba(59, 130, 246, 0.15), transparent 40%),
+      radial-gradient(ellipse at bottom left, rgba(14, 165, 233, 0.15), transparent 40%);
+    background-attachment: fixed;
+    min-height: 100vh;
+  }
+}
+
+/* Glassmorphism utility classes */
+.glass-panel {
+  background: var(--card);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+}
+
+.glass-header {
+  background: rgba(15, 23, 42, 0.6);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Smooth chart tooltips */
+.recharts-tooltip-wrapper {
+  transition: all 0.2s ease !important;
+}
+
+.custom-chart-tooltip {
+  background: rgba(15, 23, 42, 0.85) !important;
+  backdrop-filter: blur(8px) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5) !important;
+  color: white !important;
+}
+
+/* Custom Scrollbar for rich feel */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}

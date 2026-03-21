@@ -67,6 +67,8 @@ class ShotMeasurement(Base):
     clay_y = Column(Float, nullable=True)
     normalized_x = Column(Float, nullable=True)
     normalized_y = Column(Float, nullable=True)
+    trajectory = Column(JSON, nullable=True)
+    tracking_data = Column(JSON, nullable=True)
 
     shot = relationship("Shot", back_populates="measurements")
 

@@ -15,10 +15,25 @@ export default function UploadPage() {
     if (!file) return;
     
     setUploading(true);
-    setTimeout(() => {
+    
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      
+      const response = await fetch("http://localhost:8000/api/videos/upload", {
+        method: "POST",
+        body: formData,
+      });
+      
+      if (!response.ok) throw new Error("Upload failed.");
+      
       setUploading(false);
       setSuccess(true);
-    }, 2500);
+    } catch (error) {
+      console.error("Transmission failed:", error);
+      alert("Error: Neural Uplink Failed. Verify the backend is online.");
+      setUploading(false);
+    }
   }
 
   return (

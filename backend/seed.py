@@ -1,6 +1,9 @@
 import os
 import sys
 import glob
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Ensure backend directory is in the path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -29,10 +32,11 @@ def seed():
         date_str = filename[:8]
         date_formatted = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
         
-        session = db.query(models.Session).filter(models.Session.date == date_formatted).first()
+        import datetime
+        dt = datetime.datetime.strptime(date_formatted, "%Y-%m-%d")
+        
+        session = db.query(models.Session).filter(models.Session.date == dt).first()
         if not session:
-            import datetime
-            dt = datetime.datetime.strptime(date_formatted, "%Y-%m-%d")
             session = models.Session(date=dt, metadata_json={"venue": "Silver Dollar Club", "notes": "Auto-imported"})
             db.add(session)
             db.commit()
@@ -53,8 +57,10 @@ def seed():
         try:
             process_video_task(video.id)
             count += 1
-            if count % 10 == 0:
-                print(f"Processed {count} videos...")
+            print(f"Processed {count} videos...")
+            if count >= 2:
+                print("Stopping early after 2 videos for MVP testing (Full Video Tracking).")
+                break
         except Exception as e:
             print(f"Failed processing {filepath}: {e}")
             video.status = "error"

@@ -55,30 +55,33 @@ def detect_gunshot_onset(audio_data: np.ndarray, sample_rate: int = 44100, ampli
             i += 1
     return shot_times
 
-def extract_shot_frames(video_path: str, shot_times: list[float]) -> dict:
-    """Extract frames 17 frames before the shot (approx 0.15s assuming 120fps)"""
+def extract_shot_frames(video_path: str, shot_times: list[float]) -> list:
+    """Extract a sequence of 5 frames leading up to the shot for trajectory analysis."""
     results = []
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return results
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 120.0
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
     for shot_idx, shot_time in enumerate(shot_times):
         shot_frame_num = int(shot_time * fps)
         
-        # 17 frames before the shot is often the optimal clear clay position before recoil
-        target_frame_num = max(0, shot_frame_num - 17)
+        sequence_offsets = [-25, -20, -15, -10, -5]
+        sequence_frames = []
         
-        cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame_num)
-        ret, frame = cap.read()
-        if ret:
+        for offset in sequence_offsets:
+            target_frame_num = max(0, shot_frame_num + offset)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame_num)
+            ret, frame = cap.read()
+            if ret:
+                sequence_frames.append(frame)
+                
+        if sequence_frames:
             results.append({
                 "shot_index": shot_idx,
                 "onset_time": shot_time,
-                "frame_num": target_frame_num,
-                "frame_data": frame
+                "sequence_frames": sequence_frames
             })
             
     cap.release()

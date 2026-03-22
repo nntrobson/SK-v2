@@ -1183,6 +1183,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
   const averageVisiblePosition = getAveragePosition(filteredData);
   const averageHitPosition = getAveragePosition(hits);
   const averageMissPosition = getAveragePosition(misses);
+  const chartDomain = useMemo(() => getProportionalSymmetricDomain(filteredData, 10, 1.5), [filteredData]);
   const maxAbs = Math.max(Math.abs(chartDomain[0]), Math.abs(chartDomain[1]));
   const symmetricDomain = [-maxAbs, maxAbs] as [number, number];
   const breakHalf = Math.max(1.2, maxAbs * 0.155);

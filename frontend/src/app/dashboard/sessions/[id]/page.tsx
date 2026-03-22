@@ -1,45 +1,193 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import { 
-  ScatterChart, Scatter, XAxis, YAxis, ZAxis,
-  CartesianGrid, Tooltip as RechartsTooltip, 
-  ResponsiveContainer, ReferenceDot, ReferenceArea
+import React, { useEffect, useRef, useState } from "react";
+import {
+  ScatterChart,
+  Scatter,
+  XAxis,
+  YAxis,
+  ZAxis,
+  CartesianGrid,
+  Tooltip as RechartsTooltip,
+  ResponsiveContainer,
+  ReferenceDot,
+  ReferenceArea,
+  ReferenceLine,
 } from "recharts";
-import { ArrowLeft, Target, Activity, Map, ArrowDownCircle, Video, Crosshair, Sparkles } from "lucide-react";
+import { ArrowLeft, Target, Activity, Video, Crosshair, Sparkles } from "lucide-react";
 import Link from "next/link";
-import { motion } from "framer-motion";
+import { motion, type Variants } from "framer-motion";
+
+interface OverlayBbox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface OverlayBox {
+  class_name: string;
+  confidence?: number;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  bbox?: OverlayBbox | null;
+}
+
+interface TrackingFrame {
+  time: number;
+  frame_idx: number;
+  clay_x: number;
+  clay_y: number;
+  crosshair_x: number;
+  crosshair_y: number;
+  width?: number;
+  height?: number;
+  confidence?: number;
+  class_name?: string | null;
+  bbox?: OverlayBbox | null;
+  overlay_boxes?: OverlayBox[];
+  is_pretrigger_frame?: boolean;
+}
 
 interface ShotData {
   id: number;
   x: number;
   y: number;
-  type: string;
+  type: "hit" | "miss" | "unknown";
+  break_label?: string | null;
   presentation: string;
-  trajectory?: Array<{x: number, y: number}>;
+  trajectory?: Array<{ x: number; y: number }>;
+  video_id?: number;
   video_path: string;
   clay_x?: number;
   clay_y?: number;
   crosshair_x?: number;
   crosshair_y?: number;
-  station?: string;
-  tracking_data?: Array<{time: number, clay_x: number, clay_y: number, crosshair_x: number, crosshair_y: number, width?: number, height?: number, confidence?: number, class_name?: string}>;
+  station?: string | null;
+  confidence?: number | null;
+  pretrigger_time?: number | null;
+  pretrigger_frame_idx?: number | null;
+  pretrigger_boxes?: OverlayBox[];
+  overlay_validation_samples?: TrackingFrame[];
+  tracking_data?: TrackingFrame[];
 }
 
-const TrajectoryDot = (props: any) => {
+interface AveragePosition {
+  x: number;
+  y: number;
+}
+
+const OUTCOME_STYLES: Record<ShotData["type"], { color: string; label: string; badge: string }> = {
+  hit: { color: "#34d399", label: "Break", badge: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" },
+  miss: { color: "#f43f5e", label: "Miss", badge: "bg-rose-500/10 text-rose-400 border-rose-500/20" },
+  unknown: { color: "#f59e0b", label: "Unknown", badge: "bg-amber-500/10 text-amber-300 border-amber-500/20" },
+};
+
+const OVERLAY_CLASS_STYLES: Record<string, { border: string; text: string }> = {
+  "clay-targets": { border: "border-emerald-400", text: "text-emerald-300" },
+  "broken-clay": { border: "border-amber-400", text: "text-amber-300" },
+  "trap-house": { border: "border-sky-400", text: "text-sky-300" },
+  "trap-house-1-2": { border: "border-blue-400", text: "text-blue-300" },
+  "trap-house-4-5": { border: "border-violet-400", text: "text-violet-300" },
+};
+
+function getAveragePosition(shots: ShotData[]): AveragePosition | null {
+  if (shots.length === 0) {
+    return null;
+  }
+
+  const totals = shots.reduce(
+    (acc, shot) => ({
+      x: acc.x + shot.x,
+      y: acc.y + shot.y,
+    }),
+    { x: 0, y: 0 }
+  );
+
+  return {
+    x: totals.x / shots.length,
+    y: totals.y / shots.length,
+  };
+}
+
+function normalizeBbox(box: OverlayBox): OverlayBbox | null {
+  if (box.bbox) return box.bbox;
+  if (
+    typeof box.x !== "number" ||
+    typeof box.y !== "number" ||
+    typeof box.width !== "number" ||
+    typeof box.height !== "number"
+  ) {
+    return null;
+  }
+
+  return {
+    x: box.x - box.width / 2,
+    y: box.y - box.height / 2,
+    width: box.width,
+    height: box.height,
+  };
+}
+
+function formatClassLabel(className: string): string {
+  return className.replace(/-/g, " ");
+}
+
+function formatStationLabel(station: string | null | undefined): string {
+  if (!station) return "Unknown";
+  if (station === "trap-house") return "Trap House 3";
+  return formatClassLabel(station);
+}
+
+function getPhotoFrame(shot: ShotData | null): TrackingFrame | null {
+  if (!shot?.tracking_data?.length) return null;
+  return (
+    shot.tracking_data.find((frame) => frame.is_pretrigger_frame) ??
+    shot.tracking_data.find((frame) => frame.time === shot.pretrigger_time) ??
+    shot.tracking_data[shot.tracking_data.length - 1]
+  );
+}
+
+function getOverlayFrameForTime(trackingData: TrackingFrame[] | undefined, currentTime: number): TrackingFrame | null {
+  if (!trackingData?.length) return null;
+  let activeFrame = trackingData[0];
+  for (const frame of trackingData) {
+    if (frame.time > currentTime) break;
+    activeFrame = frame;
+  }
+  return activeFrame;
+}
+
+type AxisScale = { scale: (value: number) => number };
+type TrajectoryShapeProps = {
+  cx: number;
+  cy: number;
+  fill: string;
+  payload: ShotData;
+  xAxis?: AxisScale;
+  yAxis?: AxisScale;
+  onClickShot?: (shot: ShotData) => void;
+  isSelected?: boolean;
+  anySelected?: boolean;
+};
+
+const TrajectoryDot = (props: TrajectoryShapeProps) => {
   const { cx, cy, fill, payload, xAxis, yAxis, onClickShot, isSelected, anySelected } = props;
   
   const dots = [];
   if (payload.trajectory && payload.trajectory.length > 0 && xAxis && yAxis) {
     const scaleX = xAxis.scale;
     const scaleY = yAxis.scale;
+    const denominator = Math.max(payload.trajectory.length - 1, 1);
     
     for (let i = 0; i < payload.trajectory.length; i++) {
       const pt = payload.trajectory[i];
       const px = scaleX(pt.x);
       const py = scaleY(pt.y);
       
-      const t = i / (payload.trajectory.length - 1);
+      const t = i / denominator;
       const radius = Math.max(0.5, 4.5 * t);
       const opacity = 0.8 * Math.pow(t, 1.5);
       
@@ -59,20 +207,21 @@ const TrajectoryDot = (props: any) => {
   );
 };
 
-const TrajectoryMiss = (props: any) => {
+const TrajectoryMiss = (props: TrajectoryShapeProps) => {
   const { cx, cy, fill, payload, xAxis, yAxis, onClickShot, isSelected, anySelected } = props;
   
   const dots = [];
   if (payload.trajectory && payload.trajectory.length > 0 && xAxis && yAxis) {
     const scaleX = xAxis.scale;
     const scaleY = yAxis.scale;
+    const denominator = Math.max(payload.trajectory.length - 1, 1);
     
     for (let i = 0; i < payload.trajectory.length; i++) {
         const pt = payload.trajectory[i];
         const px = scaleX(pt.x);
         const py = scaleY(pt.y);
         
-        const t = i / (payload.trajectory.length - 1);
+        const t = i / denominator;
         const radius = Math.max(0.5, 4.5 * t);
         const opacity = 0.5 * Math.pow(t, 1.5);
         
@@ -94,59 +243,88 @@ const TrajectoryMiss = (props: any) => {
   );
 };
 
+const TrajectoryUnknown = (props: TrajectoryShapeProps) => {
+  const { cx, cy, fill, payload, xAxis, yAxis, onClickShot, isSelected, anySelected } = props;
+
+  const dots = [];
+  if (payload.trajectory && payload.trajectory.length > 0 && xAxis && yAxis) {
+    const scaleX = xAxis.scale;
+    const scaleY = yAxis.scale;
+    const denominator = Math.max(payload.trajectory.length - 1, 1);
+
+    for (let i = 0; i < payload.trajectory.length; i++) {
+      const pt = payload.trajectory[i];
+      const px = scaleX(pt.x);
+      const py = scaleY(pt.y);
+
+      const t = i / denominator;
+      const radius = Math.max(0.5, 4 * t);
+      const opacity = 0.45 * Math.pow(t, 1.25);
+
+      dots.push(<circle key={`unknown-tail-${i}`} cx={px} cy={py} r={radius} fill={fill} fillOpacity={opacity} style={{ pointerEvents: "none" }} />);
+    }
+  }
+
+  const opacity = anySelected ? (isSelected ? 1 : 0.25) : 1;
+
+  return (
+    <g onClick={() => onClickShot && onClickShot(payload)} className="cursor-pointer" style={{ opacity, transition: "opacity 0.3s" }}>
+      {dots}
+      <rect x={cx - 5} y={cy - 5} width={10} height={10} fill={fill} stroke="#ffffff" strokeWidth={1.5} rx={2} />
+      {isSelected && <circle cx={cx} cy={cy} r={20} fill="none" stroke="#ffffff" strokeWidth={2} className="animate-ping" />}
+    </g>
+  );
+};
+
 const containerVariants = {
   hidden: { opacity: 0 },
   show: { opacity: 1, transition: { staggerChildren: 0.1 } }
-};
+} satisfies Variants;
 
 const itemVariants = {
   hidden: { opacity: 0, y: 20 },
-  show: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 300, damping: 24 } }
-};
+  show: { opacity: 1, y: 0, transition: { type: "spring" as const, stiffness: 300, damping: 24 } }
+} satisfies Variants;
 
-const TrapFieldSelector = ({ selected, highlighted, onSelect }: { selected: string, highlighted?: string, onSelect: (s: string) => void }) => {
+const TrapHouseSelector = ({ selected, highlighted, onSelect }: { selected: string, highlighted?: string | null, onSelect: (s: string) => void }) => {
   const stations = [
-    { id: 'post_1', cx: 15, cy: 55, label: '1' },
-    { id: 'post_2', cx: 30, cy: 35, label: '2' },
-    { id: 'post_3', cx: 50, cy: 25, label: '3' },
-    { id: 'post_4', cx: 70, cy: 35, label: '4' },
-    { id: 'post_5', cx: 85, cy: 55, label: '5' },
+    { id: "trap-house-1-2", cx: 22, cy: 34, label: "1-2" },
+    { id: "trap-house", cx: 50, cy: 24, label: "3" },
+    { id: "trap-house-4-5", cx: 78, cy: 34, label: "4-5" },
   ];
 
   return (
     <div className="flex flex-col items-center gap-1">
-      <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Station</span>
-      <svg width="100" height="70" viewBox="0 0 100 70" className="overflow-visible">
-        {/* Arc indicating the 16-yard line */}
-        <path d="M 10 60 Q 50 -10 90 60" fill="none" stroke="#334155" strokeWidth="2" strokeDasharray="4 2" />
-        {/* Trap house */}
-        <rect x="42" y="60" width="16" height="10" fill="#475569" rx="2" />
-        
+      <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Trap House</span>
+      <svg width="110" height="72" viewBox="0 0 110 72" className="overflow-visible">
+        <path d="M 16 56 Q 55 4 94 56" fill="none" stroke="#334155" strokeWidth="2" strokeDasharray="4 2" />
+        <rect x="46" y="54" width="18" height="12" fill="#475569" rx="3" />
+
         {stations.map((s) => (
-          <g 
-            key={s.id} 
-            onClick={() => onSelect(selected === s.id ? 'all' : s.id)}
+          <g
+            key={s.id}
+            onClick={() => onSelect(selected === s.id ? "all" : s.id)}
             className="cursor-pointer group"
           >
-            <circle 
-              cx={s.cx} 
-              cy={s.cy} 
-              r={highlighted === s.id ? "9" : "8"} 
-              fill={highlighted === s.id ? '#22d3ee' : (selected === s.id || selected === 'all' ? '#3b82f6' : '#1e293b')} 
-              stroke={highlighted === s.id ? '#ffffff' : (selected === s.id ? '#60a5fa' : '#334155')}
+            <circle
+              cx={s.cx}
+              cy={s.cy}
+              r={highlighted === s.id ? "10" : "9"}
+              fill={highlighted === s.id ? "#22d3ee" : (selected === s.id || selected === "all" ? "#3b82f6" : "#1e293b")}
+              stroke={highlighted === s.id ? "#ffffff" : (selected === s.id ? "#60a5fa" : "#334155")}
               strokeWidth={highlighted === s.id ? "2" : "1.5"}
               className="transition-all duration-200 group-hover:fill-blue-400 group-hover:stroke-blue-300"
             />
             {highlighted === s.id && (
-              <circle cx={s.cx} cy={s.cy} r="12" fill="none" stroke="#22d3ee" strokeWidth="1.5" className="animate-ping" />
+              <circle cx={s.cx} cy={s.cy} r="14" fill="none" stroke="#22d3ee" strokeWidth="1.5" className="animate-ping" />
             )}
-            <text 
-              x={s.cx} 
-              y={s.cy} 
-              textAnchor="middle" 
-              alignmentBaseline="central" 
-              fontSize="9" 
-              fill="white" 
+            <text
+              x={s.cx}
+              y={s.cy}
+              textAnchor="middle"
+              alignmentBaseline="central"
+              fontSize="8"
+              fill="white"
               fontWeight="bold"
               className="pointer-events-none"
               dy=".1em"
@@ -224,87 +402,83 @@ const TrajectorySelector = ({ selected, highlighted, onSelect }: { selected: str
   );
 };
 
+const OverlayBoxes = ({
+  boxes,
+  crosshairX,
+  crosshairY,
+}: {
+  boxes: OverlayBox[];
+  crosshairX?: number;
+  crosshairY?: number;
+}) => {
+  if (!crosshairX || !crosshairY) return null;
+
+  return (
+    <>
+      {boxes.map((box, index) => {
+        const bbox = normalizeBbox(box);
+        if (!bbox) return null;
+        const style = OVERLAY_CLASS_STYLES[box.class_name] ?? { border: "border-white/70", text: "text-white" };
+        return (
+          <div
+            key={`${box.class_name}-${index}-${bbox.x}-${bbox.y}`}
+            className="absolute pointer-events-none z-20"
+            style={{
+              left: `${(bbox.x / (crosshairX * 2)) * 100}%`,
+              top: `${(bbox.y / (crosshairY * 2)) * 100}%`,
+              width: `${(bbox.width / (crosshairX * 2)) * 100}%`,
+              height: `${(bbox.height / (crosshairY * 2)) * 100}%`,
+            }}
+          >
+            <div className={`relative h-full w-full rounded-[2px] border-[1.5px] ${style.border}`}>
+              <span className={`absolute -top-5 left-0 whitespace-nowrap rounded-sm bg-slate-950/80 px-1.5 py-0.5 font-mono text-[9px] font-semibold ${style.text}`}>
+                {formatClassLabel(box.class_name)} {(box.confidence ?? 0).toFixed(2)}
+              </span>
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+};
+
 export default function SessionAnalyticsPage({ params }: { params: Promise<{ id: string }> }) {
   const [filter, setFilter] = useState("all");
   const [stationFilter, setStationFilter] = useState("all");
   const [shotData, setShotData] = useState<ShotData[]>([]);
+  const [sessionInfo, setSessionInfo] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [selectedShot, setSelectedShot] = useState<ShotData | null>(null);
-  const [replayMode, setReplayMode] = useState<'photo' | 'video'>('photo');
-  const videoRef = React.useRef<HTMLVideoElement>(null);
-  const overlayBoxRef = React.useRef<HTMLDivElement>(null);
-  const overlayTextRef = React.useRef<HTMLSpanElement>(null);
-  const requestRef = React.useRef<number>();
-
-  useEffect(() => {
-    const animate = () => {
-      if (videoRef.current && replayMode === 'video' && selectedShot) {
-        const vTime = videoRef.current.currentTime;
-        
-        if (selectedShot.tracking_data && selectedShot.tracking_data.length > 0 && overlayBoxRef.current) {
-          const trackingData = selectedShot.tracking_data;
-          let prevFrame = trackingData[0];
-          let nextFrame = trackingData[trackingData.length - 1];
-          
-          if (vTime < trackingData[0].time) {
-            nextFrame = trackingData[0];
-          } else if (vTime > trackingData[trackingData.length - 1].time) {
-            prevFrame = trackingData[trackingData.length - 1];
-          } else {
-            for (let i = 0; i < trackingData.length - 1; i++) {
-              if (vTime >= trackingData[i].time && vTime <= trackingData[i+1].time) {
-                prevFrame = trackingData[i];
-                nextFrame = trackingData[i+1];
-                break;
-              }
-            }
-          }
-          
-          if (vTime >= trackingData[0].time && vTime <= trackingData[trackingData.length - 1].time) {
-            // LEGACY FIX: Do not interpolate linearly! The camera recoil sweeps in a curve, 
-            // causing interpolation to lag. Just snap to the active detected frame.
-            let cx = prevFrame.clay_x;
-            let cy = prevFrame.clay_y;
-            // LEGACY FIX: Scale clay targets 2x for visibility
-            let w = (prevFrame.width || 30) * 2.0;
-            let h = (prevFrame.height || 20) * 2.0;
-            
-            overlayBoxRef.current.style.display = 'block';
-            overlayBoxRef.current.style.left = `${(Number(cx) / (Number(prevFrame.crosshair_x) * 2)) * 100}%`;
-            overlayBoxRef.current.style.top = `${(Number(cy) / (Number(prevFrame.crosshair_y) * 2)) * 100}%`;
-            overlayBoxRef.current.style.width = `${(Number(w) / (Number(prevFrame.crosshair_x) * 2)) * 100}%`;
-            overlayBoxRef.current.style.height = `${(Number(h) / (Number(prevFrame.crosshair_y) * 2)) * 100}%`;
-            
-            if (overlayTextRef.current) {
-              overlayTextRef.current.innerText = `${prevFrame.class_name || 'Clay-targets'} ${(prevFrame.confidence || 0.9).toFixed(2)}`;
-            }
-          } else {
-            overlayBoxRef.current.style.display = 'none';
-          }
-        }
-      }
-      requestRef.current = requestAnimationFrame(animate);
-    };
-    
-    if (replayMode === 'video') {
-      requestRef.current = requestAnimationFrame(animate);
-    }
-    return () => {
-      if (requestRef.current) cancelAnimationFrame(requestRef.current);
-    };
-  }, [replayMode, selectedShot]);
+  const [replayMode, setReplayMode] = useState<"photo" | "video">("photo");
+  const [activeOverlayFrame, setActiveOverlayFrame] = useState<TrackingFrame | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const requestRef = useRef<number | null>(null);
+  const lastOverlayFrameIdxRef = useRef<number | null>(null);
+  
+  // Categorization states
+  const [isEditingSession, setIsEditingSession] = useState(false);
+  const [editForm, setEditForm] = useState({ venue: "", date: "", type: "" });
+  
+  const [isCategorizeModalOpen, setIsCategorizeModalOpen] = useState(false);
+  const [categorizeShotId, setCategorizeShotId] = useState<number | null>(null);
+  const [newCategorizeName, setNewCategorizeName] = useState("");
+  const [allSessions, setAllSessions] = useState<any[]>([]);
   
   const unwrappedParams = React.use(params);
 
   useEffect(() => {
-    if (selectedShot) setReplayMode('photo');
-  }, [selectedShot]);
-
-  useEffect(() => {
-    fetch(`http://localhost:8000/api/sessions/${unwrappedParams.id}/shots`)
-      .then(res => res.json())
-      .then(data => {
-        setShotData(data);
+    Promise.all([
+      fetch(`http://localhost:8000/api/sessions/${unwrappedParams.id}/shots`).then(res => res.json()),
+      fetch(`http://localhost:8000/api/sessions/${unwrappedParams.id}`).then(res => res.json())
+    ])
+      .then(([shots, info]) => {
+        setShotData(shots);
+        setSessionInfo(info);
+        setEditForm({ 
+          venue: info.venue || "", 
+          date: info.date || "", 
+          type: info.type || "" 
+        });
         setLoading(false);
       })
       .catch(err => {
@@ -313,15 +487,128 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
       });
   }, [unwrappedParams.id]);
 
+  const handleUpdateSession = async () => {
+    try {
+      const res = await fetch(`http://localhost:8000/api/sessions/${unwrappedParams.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editForm)
+      });
+      if (res.ok) {
+        setSessionInfo({ ...sessionInfo, ...editForm });
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    setIsEditingSession(false);
+  };
+
+  const openCategorizeModal = async (shot: ShotData) => {
+    setCategorizeShotId(shot.id);
+    setIsCategorizeModalOpen(true);
+    setNewCategorizeName("");
+    try {
+      const res = await fetch("http://localhost:8000/api/sessions");
+      if (res.ok) {
+        const data = await res.json();
+        setAllSessions(data.filter((s: any) => s.id !== parseInt(unwrappedParams.id)));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleMoveShot = async (targetSessionId: number | null, newName: string | null) => {
+    if (!categorizeShotId) return;
+    const shot = shotData.find(s => s.id === categorizeShotId);
+    if (!shot) return;
+    
+    // In our backend, video_id is passed as part of the shot data
+    const videoId = shot.video_id;
+    if (!videoId) return;
+
+    try {
+      const payload = targetSessionId ? { session_id: targetSessionId } : { new_event_name: newName };
+      const res = await fetch(`http://localhost:8000/api/videos/${videoId}/move`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        // Remove shot from current view
+        setShotData(prev => prev.filter(s => s.id !== categorizeShotId));
+        setIsCategorizeModalOpen(false);
+        setCategorizeShotId(null);
+        if (selectedShot?.id === categorizeShotId) {
+          setSelectedShot(null);
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSelectShot = (shot: ShotData) => {
+    setSelectedShot(shot);
+    setReplayMode("photo");
+    setActiveOverlayFrame(getPhotoFrame(shot));
+    lastOverlayFrameIdxRef.current = null;
+  };
+
+  useEffect(() => {
+    if (replayMode !== "video" || !selectedShot?.tracking_data?.length) {
+      if (requestRef.current !== null) cancelAnimationFrame(requestRef.current);
+      return;
+    }
+
+    const animate = () => {
+      const video = videoRef.current;
+      if (video) {
+        const frame = getOverlayFrameForTime(selectedShot.tracking_data, video.currentTime);
+        if (frame && frame.frame_idx !== lastOverlayFrameIdxRef.current) {
+          lastOverlayFrameIdxRef.current = frame.frame_idx;
+          setActiveOverlayFrame(frame);
+        }
+      }
+      requestRef.current = requestAnimationFrame(animate);
+    };
+
+    requestRef.current = requestAnimationFrame(animate);
+    return () => {
+      if (requestRef.current !== null) cancelAnimationFrame(requestRef.current);
+    };
+  }, [replayMode, selectedShot]);
+
   const filteredData = shotData.filter(d => 
     (filter === "all" || d.presentation === filter) &&
     (stationFilter === "all" || d.station === stationFilter)
   );
   const hits = filteredData.filter(d => d.type === "hit");
   const misses = filteredData.filter(d => d.type === "miss");
+  const unknowns = filteredData.filter(d => d.type === "unknown");
 
-  const avgHitX = hits.length > 0 ? hits.reduce((acc, curr) => acc + curr.x, 0) / hits.length : 0;
-  const avgHitY = hits.length > 0 ? hits.reduce((acc, curr) => acc + curr.y, 0) / hits.length : 0;
+  const averageVisiblePosition = getAveragePosition(filteredData);
+  const averageHitPosition = getAveragePosition(hits);
+  const photoFrame = selectedShot ? getPhotoFrame(selectedShot) : null;
+  const activeFrame = replayMode === "video" ? activeOverlayFrame : photoFrame;
+  const overlayBoxes = replayMode === "video"
+    ? activeFrame?.overlay_boxes ?? []
+    : selectedShot?.pretrigger_boxes?.length
+      ? selectedShot.pretrigger_boxes
+      : photoFrame?.overlay_boxes ?? [];
+  const baseCrosshairX = activeFrame?.crosshair_x ?? selectedShot?.crosshair_x ?? selectedShot?.tracking_data?.[0]?.crosshair_x;
+  const baseCrosshairY = activeFrame?.crosshair_y ?? selectedShot?.crosshair_y ?? selectedShot?.tracking_data?.[0]?.crosshair_y;
+  const overlayAspectRatio = selectedShot?.tracking_data?.length
+    ? `${selectedShot.tracking_data[0].crosshair_x * 2} / ${selectedShot.tracking_data[0].crosshair_y * 2}`
+    : "16/9";
+
+  if (loading) {
+    return (
+      <div className="glass-panel rounded-2xl p-8 text-sm text-slate-300">
+        Loading session telemetry...
+      </div>
+    );
+  }
 
   return (
     <motion.div 
@@ -337,20 +624,68 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
             <ArrowLeft className="w-5 h-5 text-slate-400 group-hover:text-white transition-colors" />
           </Link>
           <div>
-            <div className="flex items-center gap-3 mb-1">
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest bg-blue-500/20 text-blue-400 border border-blue-500/30">
-                Processed via AI
-              </span>
-              <span className="text-xs text-slate-500 font-medium tracking-wider uppercase">March 20, 2026</span>
-            </div>
-            <h1 className="text-3xl font-extrabold tracking-tight text-white mb-1">Silver Dollar Club</h1>
-            <p className="text-sm font-medium text-slate-400 flex items-center gap-2">
-              <Crosshair className="w-4 h-4" /> 12 Gauge Trap Singles
-            </p>
+            {isEditingSession ? (
+              <div className="flex flex-col gap-3 glass-panel p-4 rounded-xl mb-4 border-blue-500/30 w-full max-w-lg">
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Event / Location</label>
+                  <input 
+                    type="text" 
+                    value={editForm.venue}
+                    onChange={(e) => setEditForm({...editForm, venue: e.target.value})}
+                    className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                    placeholder="e.g. Silver Dollar Club"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Date</label>
+                  <input 
+                    type="text" 
+                    value={editForm.date}
+                    onChange={(e) => setEditForm({...editForm, date: e.target.value})}
+                    className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                    placeholder="e.g. Mar 21, 2026 or 2026-03-21"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-slate-400 uppercase tracking-wider font-semibold">Discipline / Type</label>
+                  <input 
+                    type="text" 
+                    value={editForm.type}
+                    onChange={(e) => setEditForm({...editForm, type: e.target.value})}
+                    className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500"
+                    placeholder="e.g. Trap Singles"
+                  />
+                </div>
+                <div className="flex justify-end gap-2 mt-2">
+                  <button onClick={() => setIsEditingSession(false)} className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white transition-colors">Cancel</button>
+                  <button onClick={handleUpdateSession} className="px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors">Save Details</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-3 mb-1">
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest bg-blue-500/20 text-blue-400 border border-blue-500/30">
+                    Processed via AI
+                  </span>
+                  <span className="text-xs text-slate-500 font-medium tracking-wider uppercase">{sessionInfo?.date || "Loading..."}</span>
+                </div>
+                <h1 
+                  className="text-3xl font-extrabold tracking-tight text-white mb-1 cursor-pointer hover:text-blue-400 transition-colors flex items-center gap-2 group w-fit"
+                  onClick={() => setIsEditingSession(true)}
+                  title="Click to edit session details"
+                >
+                  {sessionInfo?.venue || "Loading Event..."}
+                  <span className="opacity-0 group-hover:opacity-100 text-sm text-blue-500 transition-opacity">(edit)</span>
+                </h1>
+                <p className="text-sm font-medium text-slate-400 flex items-center gap-2">
+                  <Crosshair className="w-4 h-4" /> {sessionInfo?.type || "Loading Type..."}
+                </p>
+              </>
+            )}
           </div>
         </div>
         <div className="flex items-center justify-end gap-6 mt-4 md:mt-0 flex-1">
-          <TrapFieldSelector 
+          <TrapHouseSelector 
             selected={stationFilter} 
             highlighted={selectedShot?.station}
             onSelect={setStationFilter} 
@@ -376,28 +711,46 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
             </h3>
             <div className="space-y-6 relative z-10">
               <div>
-                <div className="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-1">Hit Rate</div>
+                <div className="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-1">Break Rate</div>
                 <div className="flex items-baseline gap-2">
                   <span className="text-4xl font-extrabold text-white drop-shadow-[0_0_15px_rgba(255,255,255,0.2)]">{hits.length}</span>
-                  <span className="text-xl font-medium text-slate-500">/ {shotData.length}</span>
+                  <span className="text-xl font-medium text-slate-500">/ {filteredData.length}</span>
                 </div>
                 <div className="mt-2 h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
                   <motion.div 
                     initial={{ width: 0 }}
-                    animate={{ width: shotData.length > 0 ? `${(hits.length / shotData.length) * 100}%` : "0%" }}
+                    animate={{ width: filteredData.length > 0 ? `${(hits.length / filteredData.length) * 100}%` : "0%" }}
                     transition={{ duration: 1.5, delay: 0.5, type: "spring" }}
                     className="h-full bg-gradient-to-r from-blue-600 to-sky-400"
                   />
+                </div>
+                <div className="mt-4 grid grid-cols-3 gap-2 text-xs uppercase tracking-wider">
+                  <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-emerald-300">
+                    <div className="font-bold">{hits.length}</div>
+                    <div className="text-[10px] text-emerald-200/80">Break</div>
+                  </div>
+                  <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-rose-300">
+                    <div className="font-bold">{misses.length}</div>
+                    <div className="text-[10px] text-rose-200/80">Miss</div>
+                  </div>
+                  <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-amber-300">
+                    <div className="font-bold">{unknowns.length}</div>
+                    <div className="text-[10px] text-amber-200/80">Unknown</div>
+                  </div>
                 </div>
               </div>
 
               <div className="pt-6 border-t border-slate-700/50">
                 <div className="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-2">Break Centroid Offset</div>
-                <div className="text-xl font-bold text-white tracking-tight">
-                  <span className={avgHitX > 0 ? "text-amber-400" : "text-sky-400"}>{Math.abs(avgHitX).toFixed(1)}" {avgHitX > 0 ? 'Right' : 'Left'}</span>
-                  <span className="text-slate-600 mx-2">×</span>
-                  <span className="text-emerald-400">{avgHitY.toFixed(1)}" High</span>
-                </div>
+                {averageHitPosition ? (
+                  <div className="text-xl font-bold text-white tracking-tight">
+                    <span className={averageHitPosition.x > 0 ? "text-amber-400" : "text-sky-400"}>{Math.abs(averageHitPosition.x).toFixed(1)}&quot; {averageHitPosition.x > 0 ? 'Right' : 'Left'}</span>
+                    <span className="text-slate-600 mx-2">×</span>
+                    <span className="text-emerald-400">{averageHitPosition.y.toFixed(1)}&quot; High</span>
+                  </div>
+                ) : (
+                  <div className="text-sm font-medium text-slate-400">No successful breaks in the current filter.</div>
+                )}
               </div>
             </div>
           </div>
@@ -445,18 +798,28 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                 <div className="flex items-center gap-2 text-slate-300">
                   <span className="w-2.5 h-2.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)]" /> Miss
                 </div>
+                <div className="flex items-center gap-2 text-slate-300">
+                  <span className="h-2.5 w-2.5 rounded-sm bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.8)]" /> Unknown
+                </div>
+                <div className="flex items-center gap-2 text-slate-300">
+                  <span className="relative block h-3 w-3">
+                    <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.6)]" />
+                    <span className="absolute left-0 top-1/2 h-px w-full -translate-y-1/2 bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.6)]" />
+                  </span>
+                  Avg Visible
+                </div>
               </div>
             </div>
             
             {/* The Chart Background */}
-            <div className="flex-1 w-full bg-[#0a0f1c] rounded-xl p-4 border border-slate-800/80 shadow-[inset_0_0_40px_rgba(0,0,0,0.5)] relative group cursor-crosshair">
+            <div className="flex-1 min-h-[400px] w-full bg-[#0a0f1c] rounded-xl p-4 border border-slate-800/80 shadow-[inset_0_0_40px_rgba(0,0,0,0.5)] relative group cursor-crosshair">
               {/* Axis Labels */}
               <p className="absolute text-[10px] font-mono text-slate-500 top-2 left-1/2 -translate-x-1/2 uppercase tracking-widest">+ Vertical Offset (in)</p>
               <p className="absolute text-[10px] font-mono text-slate-500 bottom-2 left-1/2 -translate-x-1/2 uppercase tracking-widest">- Vertical Offset (in)</p>
               <p className="absolute text-[10px] font-mono text-slate-500 top-1/2 left-2 -translate-y-1/2 -rotate-90 uppercase tracking-widest">- Horiz (in)</p>
               <p className="absolute text-[10px] font-mono text-slate-500 top-1/2 right-2 translate-y-1/2 rotate-90 uppercase tracking-widest">+ Horiz (in)</p>
               
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height={400}>
                 <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
                   <CartesianGrid strokeDasharray="2 4" stroke="#1e293b" opacity={0.6} horizontal={true} vertical={true} />
                   <XAxis type="number" dataKey="x" domain={[-10, 10]} stroke="#334155" tick={{fill: '#64748b', fontSize: 12}} axisLine={{stroke: '#334155'}} />
@@ -467,12 +830,40 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                   {/* Crosshair Center */}
                   <ReferenceDot x={0} y={0} r={6} fill="#f43f5e" stroke="#fff" strokeWidth={2} label={{ position: 'top', value: 'ShotKam Center', fill: '#f43f5e', fontSize: 11, fontWeight: 700 }} />
                   <ReferenceDot x={0} y={0} r={12} fill="none" stroke="#f43f5e" strokeWidth={1} strokeOpacity={0.5} />
+
+                  {/* Average guides for all currently visible shots */}
+                  {averageVisiblePosition && (
+                    <>
+                      <ReferenceLine
+                        x={averageVisiblePosition.x}
+                        stroke="#fbbf24"
+                        strokeWidth={1.5}
+                        strokeDasharray="6 6"
+                        strokeOpacity={0.8}
+                      />
+                      <ReferenceLine
+                        y={averageVisiblePosition.y}
+                        stroke="#22d3ee"
+                        strokeWidth={1.5}
+                        strokeDasharray="6 6"
+                        strokeOpacity={0.8}
+                      />
+                      <ReferenceDot
+                        x={averageVisiblePosition.x}
+                        y={averageVisiblePosition.y}
+                        r={5}
+                        fill="#e2e8f0"
+                        stroke="#0f172a"
+                        strokeWidth={2}
+                      />
+                    </>
+                  )}
                   
                   {/* Break Zone Density Area */}
-                  {hits.length > 0 && (
+                  {averageHitPosition && (
                     <ReferenceArea 
-                      x1={avgHitX - 2.5} x2={avgHitX + 2.5} 
-                      y1={avgHitY - 1.5} y2={avgHitY + 1.5} 
+                      x1={averageHitPosition.x - 2.5} x2={averageHitPosition.x + 2.5} 
+                      y1={averageHitPosition.y - 1.5} y2={averageHitPosition.y + 1.5} 
                       fill="url(#breakGradient)" stroke="rgba(56, 189, 248, 0.3)" strokeWidth={1} strokeDasharray="3 3"
                     />
                   )}
@@ -490,13 +881,19 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                     name="Successful Breaks" 
                     data={hits} 
                     fill="#34d399" 
-                    shape={(props: any) => <TrajectoryDot {...props} onClickShot={setSelectedShot} anySelected={!!selectedShot} isSelected={selectedShot?.id === props?.payload?.id} />} 
+                    shape={(props: unknown) => <TrajectoryDot {...(props as TrajectoryShapeProps)} onClickShot={handleSelectShot} anySelected={!!selectedShot} isSelected={selectedShot?.id === (props as TrajectoryShapeProps).payload?.id} />} 
                   />
                   <Scatter 
                     name="Missed Targets" 
                     data={misses} 
                     fill="#f43f5e" 
-                    shape={(props: any) => <TrajectoryMiss {...props} onClickShot={setSelectedShot} anySelected={!!selectedShot} isSelected={selectedShot?.id === props?.payload?.id} />} 
+                    shape={(props: unknown) => <TrajectoryMiss {...(props as TrajectoryShapeProps)} onClickShot={handleSelectShot} anySelected={!!selectedShot} isSelected={selectedShot?.id === (props as TrajectoryShapeProps).payload?.id} />} 
+                  />
+                  <Scatter 
+                    name="Unknown Outcome" 
+                    data={unknowns} 
+                    fill="#f59e0b" 
+                    shape={(props: unknown) => <TrajectoryUnknown {...(props as TrajectoryShapeProps)} onClickShot={handleSelectShot} anySelected={!!selectedShot} isSelected={selectedShot?.id === (props as TrajectoryShapeProps).payload?.id} />} 
                   />
                 </ScatterChart>
               </ResponsiveContainer>
@@ -514,7 +911,15 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
               <div>
                 <h4 className="font-semibold text-white mb-1">AI Pipeline Insight</h4>
                 <p className="text-sm text-slate-300 leading-relaxed font-light">
-                  Your break centroid is anchored <strong>{Math.abs(avgHitX).toFixed(1)}" to the {avgHitX > 0 ? "Right": "Left"}</strong> and <strong>{avgHitY.toFixed(1)}" High</strong> relative to the crosshair. On misses, your pattern drifts erratically toward the extreme edges of the choke spread. Maintain smoother gun speed on <em>{filter === 'all' ? 'hard angles' : filter}</em>.
+                  {averageHitPosition ? (
+                    <>
+                      Your break centroid is anchored <strong>{Math.abs(averageHitPosition.x).toFixed(1)}&quot; to the {averageHitPosition.x > 0 ? "Right": "Left"}</strong> and <strong>{averageHitPosition.y.toFixed(1)}&quot; High</strong> relative to the crosshair. The new guide lines show the average position of every visible shot, making it easier to spot when misses are pulling the overall pattern off-center. Maintain smoother gun speed on <em>{filter === 'all' ? 'hard angles' : filter}</em>.
+                    </>
+                  ) : (
+                    <>
+                      The average guide lines now track every visible shot in the matrix, even when there are no successful breaks in the current filter. Use that overlay to judge whether the overall pattern is drifting left, right, high, or low before the break centroid reappears.
+                    </>
+                  )}
                 </p>
               </div>
             </motion.div>
@@ -551,101 +956,53 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                     </button>
                   </div>
                 </div>
-                <div className="w-full bg-slate-900 rounded-lg overflow-hidden flex flex-col items-center justify-center border border-slate-700/50 shadow-[inset_0_0_20px_rgba(0,0,0,0.5)] z-10 relative" style={{ height: '450px' }}>
-                   <div 
-                     className="relative bg-slate-900 rounded-lg overflow-hidden border border-slate-700 shadow-xl max-w-full"
-                     style={{ 
-                       width: '100%', 
-                       // Ensure the container precisely matches the video's native ~1.78 aspect ratio horizontally or vertically
-                       aspectRatio: selectedShot.tracking_data && selectedShot.tracking_data.length > 0 
-                         ? `${selectedShot.tracking_data[0].crosshair_x * 2} / ${selectedShot.tracking_data[0].crosshair_y * 2}`
-                         : '16/9',
-                       maxHeight: '70vh'
-                     }}
-                   >
-                     {replayMode === 'video' ? (
-                       <video 
-                         ref={videoRef}
-                         src={`http://localhost:8000/api/videos/serve?path=${encodeURIComponent(selectedShot.video_path)}`} 
-                         controls 
-                         autoPlay 
-                         muted
-                         playsInline
-                         className="absolute inset-0 w-full h-full object-contain"
-                       />
-                     ) : (
-                       <img 
-                         src={`http://localhost:8000/api/videos/frame?path=${encodeURIComponent(selectedShot.video_path)}&time_ms=${selectedShot.tracking_data && selectedShot.tracking_data.length > 0 ? Math.round(selectedShot.tracking_data[selectedShot.tracking_data.length - 1].time * 1000) : 1000}`}
-                         alt="Shot Frame"
-                         className="absolute inset-0 w-full h-full object-contain pointer-events-none"
-                       />
-                     )}
-                     
-                     {/* Bounding Box Overlays */}
-                     {(() => {
-                       // We ONLY need React DOM rendering for the photo or static fallback!
-                       // The hardware acceleration loop handles the 60fps video mapping directly above.
-                       let baseCrosshairX = selectedShot.crosshair_x || (selectedShot.tracking_data && selectedShot.tracking_data.length > 0 ? selectedShot.tracking_data[0].crosshair_x : undefined);
-                       let baseCrosshairY = selectedShot.crosshair_y || (selectedShot.tracking_data && selectedShot.tracking_data.length > 0 ? selectedShot.tracking_data[0].crosshair_y : undefined);
-                       
-                       return (
-                         <>
-                           {/* Global Crosshair Marker (Always Visible) */}
-                           {baseCrosshairX !== undefined && baseCrosshairY !== undefined && baseCrosshairX > 0 && (
-                             <div 
-                               className="absolute rounded-full pointer-events-none z-20 flex items-center justify-center" 
-                               style={{ 
-                                 left: `${(baseCrosshairX / (baseCrosshairX * 2)) * 100}%`, 
-                                 top: `${(baseCrosshairY / (baseCrosshairY * 2)) * 100}%`,
-                                 transform: 'translate(-50%, -50%)',
-                                 width: '10px', height: '10px'
-                               }} 
-                             >
-                               <div className="w-[6px] h-[6px] bg-red-600 rounded-full" />
-                             </div>
-                           )}
-                           
-                           {/* Hardware Accelerated Video Bounding Box */}
-                           {replayMode === 'video' && (
-                             <div 
-                               ref={overlayBoxRef}
-                               className="absolute pointer-events-none z-20" 
-                               style={{ transform: 'translate(-50%, -50%)', display: 'none' }} 
-                             >
-                               <div className="w-full h-full border-[1.5px] border-green-500 rounded-[1px] relative">
-                                 <span 
-                                   ref={overlayTextRef}
-                                   className="absolute -top-[14px] left-[-1.5px] whitespace-nowrap text-[8px] text-green-500 font-mono font-bold bg-slate-900/60 px-0.5 rounded-sm"
-                                 >
-                                    Clay-targets 0.00
-                                 </span>
-                               </div>
-                             </div>
-                           )}
-                           
-                           {/* Static Photo Fallback */}
-                           {replayMode === 'photo' && baseCrosshairX !== undefined && baseCrosshairY !== undefined && (
-                              <div 
-                                className="absolute pointer-events-none z-20" 
-                                style={{ 
-                                  left: `${(selectedShot.clay_x / (baseCrosshairX * 2)) * 100}%`, 
-                                  top: `${(selectedShot.clay_y / (baseCrosshairY * 2)) * 100}%`,
-                                  width: '48px',
-                                  height: '32px',
-                                  transform: 'translate(-50%, -50%)'
-                                }} 
-                              >
-                                <div className="w-full h-full border-[1.5px] border-green-500 rounded-[1px] relative">
-                                  <span className="absolute -top-[14px] left-[-1.5px] whitespace-nowrap text-[8px] text-green-500 font-mono font-bold bg-slate-900/60 px-0.5 rounded-sm">
-                                    Clay-targets 0.65
-                                  </span>
-                                </div>
-                              </div>
-                           )}
-                         </>
-                       );
-                     })()}
-                   </div>
+                <div className="grid gap-3 text-xs uppercase tracking-wider text-slate-300 sm:grid-cols-3">
+                  <div className="rounded-xl border border-white/10 bg-slate-900/40 px-4 py-3">
+                    <div className="text-slate-500">Outcome</div>
+                    <div className="mt-1 font-semibold text-white">{OUTCOME_STYLES[selectedShot.type].label}</div>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-slate-900/40 px-4 py-3">
+                    <div className="text-slate-500">Location</div>
+                    <div className="mt-1 font-semibold text-white">{formatStationLabel(selectedShot.station)}</div>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-slate-900/40 px-4 py-3">
+                    <div className="text-slate-500">Pre-trigger</div>
+                    <div className="mt-1 font-semibold text-white">
+                      {selectedShot.pretrigger_time !== null && selectedShot.pretrigger_time !== undefined
+                        ? `${selectedShot.pretrigger_time.toFixed(3)}s`
+                        : "Unavailable"}
+                    </div>
+                  </div>
+                </div>
+                <div className="w-full bg-slate-900 rounded-lg overflow-hidden flex flex-col items-center justify-center border border-slate-700/50 shadow-[inset_0_0_20px_rgba(0,0,0,0.5)] z-10 relative" style={{ height: "450px" }}>
+                  <div
+                    className="relative bg-slate-900 rounded-lg overflow-hidden border border-slate-700 shadow-xl max-w-full"
+                    style={{
+                      width: "100%",
+                      aspectRatio: overlayAspectRatio,
+                      maxHeight: "70vh",
+                    }}
+                  >
+                    {replayMode === "video" ? (
+                      <video
+                        ref={videoRef}
+                        src={`http://localhost:8000/api/videos/serve?path=${encodeURIComponent(selectedShot.video_path)}`}
+                        controls
+                        autoPlay
+                        muted
+                        playsInline
+                        className="absolute inset-0 h-full w-full object-contain"
+                      />
+                    ) : (
+                      <img
+                        src={`http://localhost:8000/api/videos/frame?path=${encodeURIComponent(selectedShot.video_path)}&time_ms=${Math.round((selectedShot.pretrigger_time ?? photoFrame?.time ?? 1) * 1000)}`}
+                        alt="Pre-trigger frame"
+                        className="absolute inset-0 h-full w-full object-contain pointer-events-none"
+                      />
+                    )}
+
+                    <OverlayBoxes boxes={overlayBoxes} crosshairX={baseCrosshairX} crosshairY={baseCrosshairY} />
+                  </div>
                 </div>
               </motion.div>
             )}
@@ -667,6 +1024,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                     <th className="px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">Presentation</th>
                     <th className="px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">Offset Coordinate</th>
                     <th className="px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider text-right">Verification</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider text-right w-20">Organize</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
@@ -676,25 +1034,31 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                         <span className="text-slate-500 mr-2">{String(idx + 1).padStart(2, '0')}</span> 00:0{idx + 1}:24
                       </td>
                       <td className="px-4 py-4">
-                        <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border
-                          ${shot.type === 'hit' 
-                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
-                            : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>
-                          {shot.type}
+                        <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${OUTCOME_STYLES[shot.type].badge}`}>
+                          {OUTCOME_STYLES[shot.type].label}
                         </span>
                       </td>
                       <td className="px-4 py-4 text-sm text-slate-300 font-medium capitalize">
-                        {shot.presentation.replace('_', ' ')}
+                        <div>{shot.presentation.replace('_', ' ')}</div>
+                        <div className="mt-1 text-[10px] uppercase tracking-wider text-slate-500">{formatStationLabel(shot.station)}</div>
                       </td>
                       <td className="px-4 py-4 font-mono text-xs text-slate-400">
                         [X: {shot.x > 0 ? '+' : ''}{shot.x}, Y: {shot.y > 0 ? '+' : ''}{shot.y}]
                       </td>
                       <td className="px-4 py-4 text-right">
                         <button 
-                          onClick={() => setSelectedShot(shot)}
+                          onClick={() => handleSelectShot(shot)}
                           className="px-4 py-1.5 rounded-full text-xs font-semibold text-white bg-white/5 border border-white/10 hover:bg-white/10 hover:border-white/20 transition-all opacity-0 group-hover:opacity-100"
                         >
-                          Review Frame
+                          Review Overlay
+                        </button>
+                      </td>
+                      <td className="px-4 py-4 text-right">
+                        <button 
+                          onClick={() => openCategorizeModal(shot)}
+                          className="px-4 py-1.5 rounded-full text-xs font-semibold text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 hover:bg-indigo-500/20 transition-all opacity-0 group-hover:opacity-100"
+                        >
+                          Move
                         </button>
                       </td>
                     </tr>
@@ -706,6 +1070,69 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
         </motion.div>
 
       </div>
+
+      {isCategorizeModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 max-w-md w-full shadow-2xl relative">
+            <h3 className="text-xl font-bold text-white mb-4">Move Video to Event</h3>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider block mb-2">Create New Event</label>
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    placeholder="Event Name (e.g. State Championship)"
+                    value={newCategorizeName}
+                    onChange={(e) => setNewCategorizeName(e.target.value)}
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500"
+                  />
+                  <button 
+                    onClick={() => handleMoveShot(null, newCategorizeName)}
+                    disabled={!newCategorizeName.trim()}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg font-semibold text-sm transition-colors"
+                  >
+                    Move
+                  </button>
+                </div>
+              </div>
+
+              {allSessions.length > 0 && (
+                <>
+                  <div className="relative flex items-center py-2">
+                    <div className="flex-grow border-t border-slate-800"></div>
+                    <span className="flex-shrink-0 mx-4 text-xs font-semibold text-slate-500 uppercase">Or existing event</span>
+                    <div className="flex-grow border-t border-slate-800"></div>
+                  </div>
+
+                  <div className="max-h-48 overflow-y-auto space-y-2 pr-2">
+                    {allSessions.map(session => (
+                      <button
+                        key={session.id}
+                        onClick={() => handleMoveShot(session.id, null)}
+                        className="w-full text-left px-4 py-3 rounded-xl bg-slate-800/50 hover:bg-slate-800 border border-transparent hover:border-slate-600 transition-colors flex items-center justify-between group"
+                      >
+                        <div>
+                          <div className="text-white font-medium">{session.venue}</div>
+                          <div className="text-xs text-slate-400">{session.date} • {session.type}</div>
+                        </div>
+                        <span className="text-xs text-indigo-400 opacity-0 group-hover:opacity-100 transition-opacity">Select &rarr;</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <button 
+              onClick={() => setIsCategorizeModalOpen(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }

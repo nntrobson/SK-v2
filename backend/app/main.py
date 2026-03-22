@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from app import database, models
+from app.shot_payloads import serialize_session_shot
 
 app = FastAPI(title="ShotTracker API", version="0.1.0")
 
@@ -57,20 +58,7 @@ def get_session_shots(session_id: int, db: Session = Depends(database.get_db)):
             shots = db.query(models.Shot).filter(models.Shot.video_id == v.id).all()
             for s in shots:
                 meas = db.query(models.ShotMeasurement).filter(models.ShotMeasurement.shot_id == s.id).first()
-                res.append({
-                    "id": s.id,
-                    "x": meas.normalized_x if meas else 0,
-                    "y": meas.normalized_y if meas else 0,
-                    "type": "hit" if s.break_label == "break" else "miss",
-                    "presentation": s.presentation.lower() if s.presentation else "straight",
-                    "trajectory": meas.trajectory if meas and meas.trajectory else [],
-                    "video_path": v.filepath,
-                    "clay_x": meas.clay_x if meas else 0,
-                    "clay_y": meas.clay_y if meas else 0,
-                    "crosshair_x": meas.crosshair_x if meas else 0,
-                    "crosshair_y": meas.crosshair_y if meas else 0,
-                    "tracking_data": meas.tracking_data if meas and meas.tracking_data else []
-                })
+                res.append(serialize_session_shot(shot=s, measurement=meas, video=v))
     return res
 
 import os
@@ -121,8 +109,104 @@ async def upload_video(
     from cv_pipeline.worker import process_video_task
     background_tasks.add_task(process_video_task, video.id)
     
-    return {"status": "success", "video_id": video.id, "message": "Neural Uplink Initialized."}
+    return {"status": "success", "video_id": video.id, "message": "Upload successful."}
 
+
+@app.get("/api/sessions/{session_id}")
+def get_session(session_id: int, db: Session = Depends(database.get_db)):
+    s = db.query(models.Session).filter(models.Session.id == session_id).first()
+    if not s:
+        return Response(status_code=404)
+        
+    rounds = db.query(models.Round).filter(models.Round.session_id == s.id).all()
+        
+    return {
+        "id": s.id,
+        "date": s.date.strftime("%b %d, %Y") if hasattr(s.date, "strftime") else str(s.date),
+        "venue": s.metadata_json.get("venue", "Unknown") if s.metadata_json else "Unknown",
+        "type": rounds[0].type if rounds else "Unknown",
+        "metadata": s.metadata_json
+    }
+
+from pydantic import BaseModel
+
+from typing import Optional
+
+class SessionUpdate(BaseModel):
+    venue: Optional[str] = None
+    date: Optional[str] = None
+    type: Optional[str] = None
+
+@app.put("/api/sessions/{session_id}")
+def update_session(session_id: int, update_data: SessionUpdate, db: Session = Depends(database.get_db)):
+    session = db.query(models.Session).filter(models.Session.id == session_id).first()
+    if not session:
+        return Response(status_code=404)
+    
+    if update_data.venue is not None:
+        meta = session.metadata_json or {}
+        meta["venue"] = update_data.venue
+        session.metadata_json = meta
+        # Required to trigger JSON update in some SQLAlchemy versions depending on how it's mapped
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(session, "metadata_json")
+        
+    if update_data.date is not None:
+        try:
+            # Try parsing the standard display format first
+            parsed_date = datetime.datetime.strptime(update_data.date, "%b %d, %Y")
+            session.date = parsed_date
+        except ValueError:
+            try:
+                # Fallback to ISO format if needed
+                parsed_date = datetime.datetime.strptime(update_data.date, "%Y-%m-%d")
+                session.date = parsed_date
+            except ValueError:
+                pass # ignore if parsing fails
+                
+    if update_data.type is not None:
+        round_entry = db.query(models.Round).filter(models.Round.session_id == session.id).first()
+        if round_entry:
+            round_entry.type = update_data.type
+    
+    db.commit()
+    return {"status": "success"}
+
+class VideoMove(BaseModel):
+    session_id: Optional[int] = None
+    new_event_name: Optional[str] = None
+
+@app.put("/api/videos/{video_id}/move")
+def move_video(video_id: int, move_data: VideoMove, db: Session = Depends(database.get_db)):
+    video = db.query(models.Video).filter(models.Video.id == video_id).first()
+    if not video:
+        return Response(status_code=404)
+        
+    if move_data.new_event_name:
+        # Create a new session
+        dt = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        session = models.Session(date=dt, metadata_json={"venue": move_data.new_event_name, "notes": "Categorized"})
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+        target_session_id = session.id
+    elif move_data.session_id:
+        target_session_id = move_data.session_id
+    else:
+        return Response(status_code=400)
+        
+    # Get or create a round in the target session
+    round_entry = db.query(models.Round).filter(models.Round.session_id == target_session_id).first()
+    if not round_entry:
+        round_entry = models.Round(session_id=target_session_id, type="Trap Singles")
+        db.add(round_entry)
+        db.commit()
+        db.refresh(round_entry)
+        
+    video.round_id = round_entry.id
+    db.commit()
+    
+    return {"status": "success", "new_session_id": target_session_id}
 
 @app.get("/api/videos/serve")
 def serve_video(path: str):

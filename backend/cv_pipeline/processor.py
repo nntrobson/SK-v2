@@ -7,11 +7,12 @@ from pathlib import Path
 from scipy.ndimage import gaussian_filter1d
 from scipy.io import wavfile
 import logging
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-def extract_audio_from_video(video_path: str) -> np.ndarray:
-    """Extract audio track as normalized float32 numpy array."""
+def extract_audio_track(video_path: str) -> Tuple[Optional[np.ndarray], int]:
+    """Extract audio track as normalized float32 numpy array and sample rate."""
     try:
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp:
             audio_path = tmp.name
@@ -24,7 +25,7 @@ def extract_audio_from_video(video_path: str) -> np.ndarray:
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if result.returncode != 0:
             Path(audio_path).unlink(missing_ok=True)
-            return None
+            return None, 0
             
         sample_rate, audio_data = wavfile.read(audio_path)
         Path(audio_path).unlink()
@@ -33,10 +34,15 @@ def extract_audio_from_video(video_path: str) -> np.ndarray:
             audio_normalized = audio_data.astype(np.float32) / 32768.0
         else:
             audio_normalized = audio_data.astype(np.float32)
-        return audio_normalized
+        return audio_normalized, int(sample_rate)
     except Exception as e:
         logger.error(f"Audio extraction failed: {e}")
-        return None
+        return None, 0
+
+def extract_audio_from_video(video_path: str) -> np.ndarray:
+    """Extract audio track as normalized float32 numpy array."""
+    audio_data, _sample_rate = extract_audio_track(video_path)
+    return audio_data
 
 def detect_gunshot_onset(audio_data: np.ndarray, sample_rate: int = 44100, amplitude_threshold: float = 0.25) -> list[float]:
     """Detect shot times based on audio amplitude thresholding."""

@@ -286,6 +286,51 @@ def serve_validation_review_video(run_name: str, package_name: str):
     return Response(status_code=404)
 
 
+@app.post("/api/videos/{video_id}/reprocess")
+async def reprocess_video(
+    video_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(database.get_db),
+):
+    video = db.query(models.Video).filter(models.Video.id == video_id).first()
+    if not video:
+        return Response(status_code=404)
+
+    existing_shots = db.query(models.Shot).filter(models.Shot.video_id == video_id).all()
+    for shot in existing_shots:
+        db.query(models.ShotMeasurement).filter(models.ShotMeasurement.shot_id == shot.id).delete()
+    db.query(models.Shot).filter(models.Shot.video_id == video_id).delete()
+    video.status = "pending"
+    db.commit()
+
+    from cv_pipeline.worker import process_video_task
+    background_tasks.add_task(process_video_task, video.id)
+    return {"status": "queued", "video_id": video_id}
+
+
+@app.post("/api/videos/reprocess-all")
+async def reprocess_all_videos(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(database.get_db),
+):
+    videos = db.query(models.Video).all()
+    queued = []
+    for video in videos:
+        if not os.path.exists(video.filepath):
+            continue
+        existing_shots = db.query(models.Shot).filter(models.Shot.video_id == video.id).all()
+        for shot in existing_shots:
+            db.query(models.ShotMeasurement).filter(models.ShotMeasurement.shot_id == shot.id).delete()
+        db.query(models.Shot).filter(models.Shot.video_id == video.id).delete()
+        video.status = "pending"
+        db.commit()
+
+        from cv_pipeline.worker import process_video_task
+        background_tasks.add_task(process_video_task, video.id)
+        queued.append(video.id)
+    return {"status": "queued", "video_ids": queued}
+
+
 @app.get("/api/videos/serve")
 def serve_video(path: str):
     if os.path.exists(path):

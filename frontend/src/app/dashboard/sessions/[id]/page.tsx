@@ -182,9 +182,12 @@ function stationOptionIsActive(station: string | null | undefined, optionValue: 
   return s === optionValue;
 }
 
-function getSymmetricAxisDomain(
+/**
+ * One domain for both axes from max(|x|, |y|) so horizontal and vertical scales match:
+ * with a square plot area, one data unit is the same pixel distance on X and Y (“crosshair units”).
+ */
+function getProportionalSymmetricDomain(
   shots: ShotData[],
-  axis: "x" | "y",
   minimumExtent: number,
   padding: number,
 ): [number, number] {
@@ -192,8 +195,11 @@ function getSymmetricAxisDomain(
     return [-minimumExtent, minimumExtent];
   }
 
-  const maxAbsValue = shots.reduce((maxValue, shot) => Math.max(maxValue, Math.abs(shot[axis])), 0);
-  const extent = Math.max(minimumExtent, Math.ceil((maxAbsValue + padding) * 2) / 2);
+  const maxAbs = shots.reduce(
+    (m, shot) => Math.max(m, Math.abs(shot.x), Math.abs(shot.y)),
+    0,
+  );
+  const extent = Math.max(minimumExtent, Math.ceil((maxAbs + padding) * 2) / 2);
   return [-extent, extent];
 }
 
@@ -288,72 +294,108 @@ type TrajectoryShapeProps = {
   anySelected?: boolean;
 };
 
+/** Thin red + matching ShotKam-style bead overlay (pixel coords from ReferenceDot). */
+function BeadCenterCrosshairShape(props: { cx?: number; cy?: number }) {
+  const cx = props.cx ?? 0;
+  const cy = props.cy ?? 0;
+  const arm = 12;
+  const strokeW = 1.35;
+  return (
+    <g className="pointer-events-none">
+      <line
+        x1={cx - arm}
+        y1={cy}
+        x2={cx + arm}
+        y2={cy}
+        stroke="#dc2626"
+        strokeWidth={strokeW}
+        strokeLinecap="square"
+      />
+      <line
+        x1={cx}
+        y1={cy - arm}
+        x2={cx}
+        y2={cy + arm}
+        stroke="#dc2626"
+        strokeWidth={strokeW}
+        strokeLinecap="square"
+      />
+    </g>
+  );
+}
+
 const TrajectoryDot = (props: TrajectoryShapeProps) => {
   const { cx, cy, fill, payload, xAxis, yAxis, onClickShot, isSelected, anySelected } = props;
-  
+
   const dots = [];
   if (isSelected && payload.trajectory && payload.trajectory.length > 0 && xAxis && yAxis) {
     const scaleX = xAxis.scale;
     const scaleY = yAxis.scale;
     const denominator = Math.max(payload.trajectory.length - 1, 1);
-    
+
     for (let i = 0; i < payload.trajectory.length; i++) {
       const pt = payload.trajectory[i];
       const px = scaleX(pt.x);
       const py = scaleY(pt.y);
-      
+
       const t = i / denominator;
       const radius = Math.max(1.25, 3.25 * t);
       const opacity = 0.35 * Math.pow(t, 1.3);
-      
-      dots.push(<circle key={`tail-${i}`} cx={px} cy={py} r={radius} fill={fill} fillOpacity={opacity} style={{ pointerEvents: 'none' }} />);
+
+      dots.push(<circle key={`tail-${i}`} cx={px} cy={py} r={radius} fill={fill} fillOpacity={opacity} style={{ pointerEvents: "none" }} />);
     }
   }
 
   const opacity = anySelected ? (isSelected ? 1 : 0.25) : 1;
 
   return (
-    <g onClick={() => onClickShot && onClickShot(payload)} className="cursor-pointer" style={{ opacity, transition: 'opacity 0.3s' }}>
+    <g onClick={() => onClickShot && onClickShot(payload)} className="cursor-pointer" style={{ opacity, transition: "opacity 0.3s" }}>
       {dots}
-      <circle cx={cx} cy={cy} r={11} fill={fill} fillOpacity={0.14} />
-      <circle cx={cx} cy={cy} r={6.5} fill={fill} stroke="#ffffff" strokeWidth={1.5} />
-      <circle cx={cx} cy={cy} r={2.3} fill="#f8fafc" />
-      {isSelected && <circle cx={cx} cy={cy} r={20} fill="none" stroke="#ffffff" strokeWidth={2} className="animate-ping" />}
+      <circle cx={cx} cy={cy} r={11} fill={fill} fillOpacity={0.12} />
+      <circle
+        cx={cx}
+        cy={cy}
+        r={6.5}
+        fill={fill}
+        fillOpacity={0.92}
+        stroke="rgba(15,23,42,0.65)"
+        strokeWidth={1.15}
+      />
+      <circle cx={cx} cy={cy} r={2.4} fill="#a7f3d0" fillOpacity={0.95} />
     </g>
   );
 };
 
 const TrajectoryMiss = (props: TrajectoryShapeProps) => {
   const { cx, cy, fill, payload, xAxis, yAxis, onClickShot, isSelected, anySelected } = props;
-  
+
   const dots = [];
   if (isSelected && payload.trajectory && payload.trajectory.length > 0 && xAxis && yAxis) {
     const scaleX = xAxis.scale;
     const scaleY = yAxis.scale;
     const denominator = Math.max(payload.trajectory.length - 1, 1);
-    
+
     for (let i = 0; i < payload.trajectory.length; i++) {
-        const pt = payload.trajectory[i];
-        const px = scaleX(pt.x);
-        const py = scaleY(pt.y);
-        
-        const t = i / denominator;
-        const radius = Math.max(1.25, 3.25 * t);
-        const opacity = 0.25 * Math.pow(t, 1.2);
-        
-        dots.push(<circle key={`miss-tail-${i}`} cx={px} cy={py} r={radius} fill="#94a3b8" fillOpacity={opacity} style={{ pointerEvents: 'none' }} />);
+      const pt = payload.trajectory[i];
+      const px = scaleX(pt.x);
+      const py = scaleY(pt.y);
+
+      const t = i / denominator;
+      const radius = Math.max(1.25, 3.25 * t);
+      const opacity = 0.25 * Math.pow(t, 1.2);
+
+      dots.push(<circle key={`miss-tail-${i}`} cx={px} cy={py} r={radius} fill="#94a3b8" fillOpacity={opacity} style={{ pointerEvents: "none" }} />);
     }
   }
 
   const opacity = anySelected ? (isSelected ? 1 : 0.25) : 1;
 
   return (
-    <g onClick={() => onClickShot && onClickShot(payload)} className="cursor-pointer" style={{ opacity, transition: 'opacity 0.3s' }}>
+    <g onClick={() => onClickShot && onClickShot(payload)} className="cursor-pointer" style={{ opacity, transition: "opacity 0.3s" }}>
       {dots}
-      <circle cx={cx} cy={cy} r={11} fill={fill} fillOpacity={0.1} stroke={fill} strokeOpacity={0.3} />
-      <line x1={cx-5.25} y1={cy-5.25} x2={cx+5.25} y2={cy+5.25} stroke={fill} strokeWidth={2.75} strokeLinecap="round" />
-      <line x1={cx+5.25} y1={cy-5.25} x2={cx-5.25} y2={cy+5.25} stroke={fill} strokeWidth={2.75} strokeLinecap="round" />
-      {isSelected && <circle cx={cx} cy={cy} r={20} fill="none" stroke="#ffffff" strokeWidth={2} className="animate-ping" />}
+      <circle cx={cx} cy={cy} r={11} fill={fill} fillOpacity={0.08} stroke="rgba(15,23,42,0.55)" strokeWidth={1} />
+      <line x1={cx - 5.25} y1={cy - 5.25} x2={cx + 5.25} y2={cy + 5.25} stroke={fill} strokeWidth={2.75} strokeLinecap="round" />
+      <line x1={cx + 5.25} y1={cy - 5.25} x2={cx - 5.25} y2={cy + 5.25} stroke={fill} strokeWidth={2.75} strokeLinecap="round" />
     </g>
   );
 };
@@ -385,9 +427,19 @@ const TrajectoryUnknown = (props: TrajectoryShapeProps) => {
   return (
     <g onClick={() => onClickShot && onClickShot(payload)} className="cursor-pointer" style={{ opacity, transition: "opacity 0.3s" }}>
       {dots}
-      <rect x={cx - 6} y={cy - 6} width={12} height={12} fill={fill} fillOpacity={0.2} stroke="#ffffff" strokeWidth={1.5} rx={2} transform={`rotate(45 ${cx} ${cy})`} />
-      <circle cx={cx} cy={cy} r={2.25} fill="#f8fafc" />
-      {isSelected && <circle cx={cx} cy={cy} r={20} fill="none" stroke="#ffffff" strokeWidth={2} className="animate-ping" />}
+      <rect
+        x={cx - 6}
+        y={cy - 6}
+        width={12}
+        height={12}
+        fill={fill}
+        fillOpacity={0.22}
+        stroke="rgba(15,23,42,0.6)"
+        strokeWidth={1.15}
+        rx={2}
+        transform={`rotate(45 ${cx} ${cy})`}
+      />
+      <circle cx={cx} cy={cy} r={2.25} fill="#fde68a" fillOpacity={0.95} />
     </g>
   );
 };
@@ -444,79 +496,140 @@ const itemVariants = {
   show: { opacity: 1, y: 0, transition: { type: "spring" as const, stiffness: 300, damping: 24 } }
 } satisfies Variants;
 
-const TrapHouseSelector = ({ selected, highlighted, onSelect }: { selected: string, highlighted?: string | null, onSelect: (s: string) => void }) => {
+const TrapHouseSelector = ({
+  selected,
+  highlighted,
+  onSelect,
+  compact = false,
+  relaxed = false,
+  shotCounts,
+}: {
+  selected: string;
+  highlighted?: string | null;
+  onSelect: (s: string) => void;
+  compact?: boolean;
+  relaxed?: boolean;
+  /** Session shot totals per station id (e.g. trap-house-1-2). */
+  shotCounts?: Record<string, number>;
+}) => {
   const stations = [
-    { id: "trap-house-1-2", cx: 22, cy: 34, label: "1-2" },
-    { id: "trap-house", cx: 50, cy: 24, label: "3" },
-    { id: "trap-house-4-5", cx: 78, cy: 34, label: "4-5" },
+    { id: "trap-house-1-2", cx: 23, cy: 36, label: "1-2" },
+    { id: "trap-house", cx: 50, cy: 25, label: "3" },
+    { id: "trap-house-4-5", cx: 77, cy: 36, label: "4-5" },
   ];
 
-  return (
-    <div className="flex flex-col items-center gap-1">
-      <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Trap House</span>
-      <svg width="110" height="72" viewBox="0 0 110 72" className="overflow-visible">
-        <path d="M 16 56 Q 55 4 94 56" fill="none" stroke="#334155" strokeWidth="2" strokeDasharray="4 2" />
-        <rect x="46" y="54" width="18" height="12" fill="#475569" rx="3" />
+  const w = compact ? 88 : relaxed ? 158 : 110;
+  const h = compact ? 50 : relaxed ? 102 : 72;
+  const countFont = compact ? "4.5" : relaxed ? "6" : "5.5";
+  const labelFont = compact ? "5.5" : relaxed ? "7" : "6.5";
 
-        {stations.map((s) => (
-          <g
-            key={s.id}
-            onClick={() => onSelect(selected === s.id ? "all" : s.id)}
-            className="cursor-pointer group"
-          >
-            <circle
-              cx={s.cx}
-              cy={s.cy}
-              r={highlighted === s.id ? "10" : "9"}
-              fill={highlighted === s.id ? "#22d3ee" : (selected === s.id || selected === "all" ? "#3b82f6" : "#1e293b")}
-              stroke={highlighted === s.id ? "#ffffff" : (selected === s.id ? "#60a5fa" : "#334155")}
-              strokeWidth={highlighted === s.id ? "2" : "1.5"}
-              className="transition-all duration-200 group-hover:fill-blue-400 group-hover:stroke-blue-300"
-            />
-            {highlighted === s.id && (
-              <circle cx={s.cx} cy={s.cy} r="14" fill="none" stroke="#22d3ee" strokeWidth="1.5" className="animate-ping" />
-            )}
-            <text
-              x={s.cx}
-              y={s.cy}
-              textAnchor="middle"
-              alignmentBaseline="central"
-              fontSize="8"
-              fill="white"
-              fontWeight="bold"
-              className="pointer-events-none"
-              dy=".1em"
+  return (
+    <div className={`flex flex-col items-center ${compact ? "max-h-[4.75rem] justify-end gap-0" : "gap-2"}`}>
+      <span
+        className={`font-bold uppercase tracking-widest text-slate-500 ${compact ? "mb-0.5 text-[9px] leading-none" : "mb-0 text-[10px]"}`}
+      >
+        Trap House
+      </span>
+      <svg width={w} height={h} viewBox="0 0 100 70" className="shrink-0 overflow-visible">
+        <path d="M 5 55 Q 50 -5 95 55" fill="none" stroke="#334155" strokeWidth="2" strokeDasharray="4 2" />
+        <rect x="42" y="60" width="16" height="8" fill="#475569" rx="2" />
+
+        {stations.map((s) => {
+          const n = shotCounts?.[s.id] ?? 0;
+          return (
+            <g
+              key={s.id}
+              onClick={() => onSelect(selected === s.id ? "all" : s.id)}
+              className="cursor-pointer group"
             >
-              {s.label}
-            </text>
-          </g>
-        ))}
+              <title>{`${s.label}: ${n} shot${n === 1 ? "" : "s"} in this session`}</title>
+              <circle
+                cx={s.cx}
+                cy={s.cy}
+                r={highlighted === s.id ? "14" : "12"}
+                fill={highlighted === s.id ? "#22d3ee" : (selected === s.id || selected === "all" ? "#3b82f6" : "#1e293b")}
+                stroke={highlighted === s.id ? "#ffffff" : (selected === s.id ? "#60a5fa" : "#334155")}
+                strokeWidth={highlighted === s.id ? "2" : "1.5"}
+                className="transition-all duration-200 group-hover:fill-blue-400 group-hover:stroke-blue-300"
+              />
+              <text
+                x={s.cx}
+                y={s.cy}
+                textAnchor="middle"
+                className="pointer-events-none"
+                dominantBaseline="middle"
+              >
+                <tspan x={s.cx} dy={shotCounts ? "-0.3em" : "0.1em"} fontSize={labelFont} fill="white" fontWeight="bold">
+                  {s.label}
+                </tspan>
+                {shotCounts ? (
+                  <tspan x={s.cx} dy="1.1em" fontSize={countFont} fill="#cbd5e1" fontWeight="700">
+                    {n}
+                  </tspan>
+                ) : null}
+              </text>
+            </g>
+          );
+        })}
       </svg>
     </div>
   );
 };
 
-const TrajectorySelector = ({ selected, highlighted, onSelect }: { selected: string, highlighted?: string, onSelect: (s: string) => void }) => {
+const TrajectorySelector = ({
+  selected,
+  highlighted,
+  onSelect,
+  compact = false,
+  relaxed = false,
+  shotCounts,
+}: {
+  selected: string;
+  highlighted?: string;
+  onSelect: (s: string) => void;
+  compact?: boolean;
+  relaxed?: boolean;
+  /** Session shot totals per presentation id (e.g. hard_left). */
+  shotCounts?: Record<string, number>;
+}) => {
   const trajectories = [
-    { id: 'hard_left', d: 'M 50 65 Q 35 40 10 20', x: 10, y: 20 },
-    { id: 'moderate_left', d: 'M 50 65 Q 45 35 30 5', x: 30, y: 5 },
-    { id: 'straight', d: 'M 50 65 L 50 -5', x: 50, y: -5 },
-    { id: 'moderate_right', d: 'M 50 65 Q 55 35 70 5', x: 70, y: 5 },
-    { id: 'hard_right', d: 'M 50 65 Q 65 40 90 20', x: 90, y: 20 },
-  ];
+    { id: 'hard_left', d: 'M 50 75 Q 25 50 10 35', x: 10, y: 35, countY: 23 },
+    { id: 'moderate_left', d: 'M 50 75 Q 35 40 30 20', x: 30, y: 20, countY: 8 },
+    { id: 'straight', d: 'M 50 75 L 50 15', x: 50, y: 15, countY: 3 },
+    { id: 'moderate_right', d: 'M 50 75 Q 65 40 70 20', x: 70, y: 20, countY: 8 },
+    { id: 'hard_right', d: 'M 50 75 Q 75 50 90 35', x: 90, y: 35, countY: 23 },
+  ] as const;
+
+  const sw = compact ? 76 : 100;
+  const sh = compact ? 60 : 85;
 
   return (
-    <div className="flex flex-col items-center gap-1 border-l border-white/10 pl-6">
-      <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Trajectory</span>
-      <svg width="100" height="70" viewBox="0 0 100 70" className="overflow-visible">
+    <div className={`flex flex-col items-center ${compact ? "max-h-[4.75rem] justify-end gap-0" : relaxed ? "w-full gap-2" : "w-full gap-1"}`}>
+      {compact ? (
+        <span className="mb-0.5 text-[9px] font-bold uppercase tracking-widest leading-none text-slate-500">Trajectory</span>
+      ) : null}
+      <svg
+        viewBox="0 0 100 85"
+        width={relaxed && !compact ? undefined : sw}
+        height={relaxed && !compact ? undefined : sh}
+        className={`mx-auto overflow-visible ${
+          compact
+            ? "shrink-0"
+            : relaxed
+              ? "aspect-[100/85] h-auto w-full max-w-[20rem]"
+              : "h-[85px] w-[100px] shrink-0"
+        }`}
+      >
         {/* Trap house */}
-        <rect x="42" y="60" width="16" height="10" fill="#475569" rx="2" />
+        <rect x="42" y="75" width="16" height="8" fill="#475569" rx="2" />
         
         {trajectories.map((t) => {
           const isHighlighted = highlighted === t.id;
           const isSelected = selected === t.id || selected === 'all';
           const color = isHighlighted ? '#22d3ee' : (isSelected ? '#3b82f6' : '#1e293b');
           const strokeWidth = isHighlighted ? '3.5' : (selected === t.id ? '3' : '2');
+          const n = shotCounts?.[t.id] ?? 0;
+          const countFont = compact ? "5" : relaxed ? "7" : "6";
           
           return (
             <g 
@@ -524,6 +637,7 @@ const TrajectorySelector = ({ selected, highlighted, onSelect }: { selected: str
               onClick={() => onSelect(selected === t.id ? 'all' : t.id)}
               className="cursor-pointer group"
             >
+              <title>{`${t.id.replace(/_/g, " ")}: ${n} shot${n === 1 ? "" : "s"} in this session`}</title>
               <path 
                 d={t.d} 
                 fill="none" 
@@ -541,9 +655,20 @@ const TrajectorySelector = ({ selected, highlighted, onSelect }: { selected: str
                 strokeWidth="1.5"
                 className="transition-all duration-200 group-hover:fill-blue-400"
               />
-              {isHighlighted && (
-                <circle cx={t.x} cy={t.y} r="8" fill="none" stroke="#22d3ee" strokeWidth="1.5" className="animate-ping" />
-              )}
+              {shotCounts ? (
+                <text
+                  x={t.x}
+                  y={t.countY}
+                  textAnchor="middle"
+                  fontSize={countFont}
+                  fill={isSelected ? "#f8fafc" : "#94a3b8"}
+                  fontWeight="700"
+                  className="pointer-events-none transition-colors duration-200"
+                  style={{ textShadow: "0 0 3px rgba(15,23,42,0.9), 0 0 6px rgba(15,23,42,0.7)" }}
+                >
+                  {n}
+                </text>
+              ) : null}
               {/* Invisible wider area for easier clicking */}
               <path 
                 d={t.d} 
@@ -556,6 +681,79 @@ const TrajectorySelector = ({ selected, highlighted, onSelect }: { selected: str
           );
         })}
       </svg>
+    </div>
+  );
+};
+
+/** Wide, short telemetry strip — height aligned with venue block; content spread horizontally */
+const SessionTelemetryHeaderStrip = ({
+  hitsCount,
+  missesCount,
+  unknownsCount,
+  filteredCount,
+  summaryPosition,
+  summaryPositionLabel,
+}: {
+  hitsCount: number;
+  missesCount: number;
+  unknownsCount: number;
+  filteredCount: number;
+  summaryPosition: AveragePosition | null;
+  summaryPositionLabel: string;
+}) => {
+  const pct = filteredCount > 0 ? (hitsCount / filteredCount) * 100 : 0;
+  return (
+    <div className="glass-panel group relative flex w-full min-w-0 flex-1 overflow-hidden rounded-xl border border-white/10 bg-slate-950/40 px-3 py-2 sm:px-4 xl:max-h-[5.75rem] xl:min-w-0 xl:flex-1">
+      <div className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 p-2 opacity-[0.06]">
+        <Activity className="h-14 w-14 text-blue-500" />
+      </div>
+      <div className="relative z-10 flex w-full min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3 md:gap-4 lg:gap-5">
+        <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span className="text-[9px] font-bold uppercase tracking-[0.18em] text-slate-500">Session Telemetry</span>
+          <span className="text-2xl font-extrabold leading-none text-white">{hitsCount}</span>
+          <span className="text-sm leading-none text-slate-500">/ {filteredCount}</span>
+        </div>
+        <div className="h-1 min-w-[4rem] flex-1 rounded-full bg-slate-800 sm:h-1.5 sm:max-w-[11rem] md:max-w-[16rem] lg:max-w-xs">
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${pct}%` }}
+            transition={{ duration: 1.2, delay: 0.2, type: "spring" }}
+            className="h-full rounded-full bg-gradient-to-r from-blue-600 to-sky-400"
+          />
+        </div>
+        <div className="flex shrink-0 gap-1">
+          <div className="rounded-md border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-center text-[9px] font-bold uppercase tracking-wider text-emerald-300">
+            {hitsCount} <span className="font-semibold text-emerald-200/70">Brk</span>
+          </div>
+          <div className="rounded-md border border-rose-500/25 bg-rose-500/10 px-2 py-0.5 text-center text-[9px] font-bold uppercase tracking-wider text-rose-300">
+            {missesCount} <span className="font-semibold text-rose-200/70">Mis</span>
+          </div>
+          <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-center text-[9px] font-bold uppercase tracking-wider text-amber-300">
+            {unknownsCount} <span className="font-semibold text-amber-200/70">Unk</span>
+          </div>
+        </div>
+        {summaryPosition ? (
+          <>
+            <div className="hidden h-9 w-px shrink-0 bg-white/10 sm:block" aria-hidden />
+            <div className="flex min-w-0 flex-1 gap-2 sm:justify-end">
+              <div className="min-w-0 max-w-[40%] rounded-md border border-sky-500/20 bg-sky-500/10 px-2 py-1 sm:max-w-none sm:flex-1">
+                <div className="text-[8px] font-semibold uppercase tracking-wider text-slate-500">{summaryPositionLabel} · H</div>
+                <div className="truncate text-[11px] font-bold leading-tight text-white">
+                  {describeHorizontalOffset(summaryPosition.x)}
+                </div>
+              </div>
+              <div className="min-w-0 max-w-[40%] rounded-md border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 sm:max-w-none sm:flex-1">
+                <div className="text-[8px] font-semibold uppercase tracking-wider text-slate-500">V</div>
+                <div className="truncate text-[11px] font-bold leading-tight text-white">
+                  {describeVerticalOffset(summaryPosition.y)}
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <span className="hidden text-[10px] text-slate-500 sm:inline">No breaks in filter</span>
+        )}
+      </div>
     </div>
   );
 };
@@ -666,7 +864,7 @@ const ValidationPanel = ({ shots }: { shots: ShotData[] }) => {
   const videoIds = [...new Set(shots.map((s) => s.video_id).filter(Boolean))] as number[];
 
   return (
-    <motion.div variants={itemVariants} className="xl:col-span-4 mt-2">
+    <motion.div variants={itemVariants} className="mt-2">
       <div className="glass-panel rounded-2xl p-6 relative overflow-hidden">
         <div className="flex items-center justify-between mb-6 border-b border-white/10 pb-4">
           <h2 className="text-lg font-bold flex items-center gap-2 text-white">
@@ -952,6 +1150,25 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
     };
   }, [replayMode, selectedShot]);
 
+  const presentationShotCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const d of shotData) {
+      const p = d.presentation;
+      c[p] = (c[p] ?? 0) + 1;
+    }
+    return c;
+  }, [shotData]);
+
+  const stationShotCounts = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const d of shotData) {
+      const st = d.station?.trim();
+      if (!st) continue;
+      c[st] = (c[st] ?? 0) + 1;
+    }
+    return c;
+  }, [shotData]);
+
   const filteredData = shotData.filter(d => 
     (filter === "all" || d.presentation === filter) &&
     (stationFilter === "all" || d.station === stationFilter)
@@ -963,10 +1180,10 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
   const averageVisiblePosition = getAveragePosition(filteredData);
   const averageHitPosition = getAveragePosition(hits);
   const averageMissPosition = getAveragePosition(misses);
-  const chartXDomain = useMemo(() => getSymmetricAxisDomain(filteredData, "x", 10, 1.5), [filteredData]);
-  const chartYDomain = useMemo(() => getSymmetricAxisDomain(filteredData, "y", 6, 1), [filteredData]);
-  const breakWindowHalfWidth = Math.max(1.5, chartXDomain[1] * 0.16);
-  const breakWindowHalfHeight = Math.max(1, chartYDomain[1] * 0.18);
+  const chartDomain = useMemo(() => getProportionalSymmetricDomain(filteredData, 10, 1.5), [filteredData]);
+  const breakHalf = Math.max(1.2, chartDomain[1] * 0.155);
+  const breakWindowHalfWidth = breakHalf;
+  const breakWindowHalfHeight = breakHalf;
   const shotPatternSummary = useMemo(() => getShotPatternSummary({
     filter,
     hitsCount: hits.length,
@@ -1006,13 +1223,16 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
       animate="show"
       className="flex flex-col gap-6 w-full pb-12"
     >
-      {/* Top Header Row */}
-      <motion.div variants={itemVariants} className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-white/5 pb-6">
-        <div className="flex items-center gap-4">
+      {/* Top Header Row — session title + session telemetry */}
+      <motion.div
+        variants={itemVariants}
+        className="flex flex-col gap-4 border-b border-white/5 pb-6 xl:flex-row xl:items-center xl:justify-between xl:gap-6"
+      >
+        <div className="flex min-w-0 shrink-0 items-start gap-4">
           <Link href="/dashboard/sessions" className="p-2.5 glass-panel rounded-full hover:bg-white/10 transition-colors group">
             <ArrowLeft className="w-5 h-5 text-slate-400 group-hover:text-white transition-colors" />
           </Link>
-          <div>
+          <div className="min-w-0 flex-1">
             {isEditingSession ? (
               <div className="flex flex-col gap-3 glass-panel p-4 rounded-xl mb-4 border-blue-500/30 w-full max-w-lg">
                 <div className="flex flex-col gap-1">
@@ -1073,112 +1293,52 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
             )}
           </div>
         </div>
-        <div className="flex flex-wrap items-end justify-end gap-4 md:gap-6 mt-4 md:mt-0 flex-1">
-          <TrapHouseSelector 
-            selected={stationFilter} 
-            highlighted={selectedShot?.station}
-            onSelect={setStationFilter} 
+
+        {!isEditingSession && (
+          <SessionTelemetryHeaderStrip
+            hitsCount={hits.length}
+            missesCount={misses.length}
+            unknownsCount={unknowns.length}
+            filteredCount={filteredData.length}
+            summaryPosition={summaryPosition}
+            summaryPositionLabel={summaryPositionLabel}
           />
-          <TrajectorySelector 
-            selected={filter} 
-            highlighted={selectedShot?.presentation}
-            onSelect={setFilter} 
-          />
-          {selectedShot && (
-            <button
-              type="button"
-              onClick={deselectShot}
-              title="Clear selected shot (path highlight, station ring, replay panel). Press Esc."
-              className="flex items-center gap-2 self-end rounded-full border border-white/15 bg-slate-900/70 px-3 py-2 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-200 shadow-sm transition hover:border-cyan-500/40 hover:bg-slate-800/90 hover:text-white"
-            >
-              <X className="h-3.5 w-3.5 text-cyan-400" aria-hidden />
-              <span>Clear selection</span>
-              <kbd className="hidden sm:inline rounded border border-white/10 bg-slate-950/80 px-1.5 py-0.5 font-mono text-[9px] font-semibold normal-case tracking-normal text-slate-500">
-                Esc
-              </kbd>
-            </button>
-          )}
-        </div>
+        )}
       </motion.div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
-        
-        {/* Left Col: Filters & Summaries */}
+      <div className="flex flex-col gap-6">
+        {/* Main: shot placement + downstream panels (full width; trajectory/trap live in header) */}
         <motion.div variants={itemVariants} className="flex flex-col gap-6">
-          <div className="glass-panel rounded-2xl p-6 relative overflow-hidden group">
-            <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
-              <Activity className="w-24 h-24 text-blue-500" />
-            </div>
-            <h3 className="text-slate-400 font-medium text-sm tracking-wider uppercase mb-6 flex items-center gap-2">
-               Session Telemetry
-            </h3>
-            <div className="space-y-6 relative z-10">
+          <div className="glass-panel relative flex min-h-[600px] flex-col overflow-hidden rounded-2xl p-6">
+            <div className="absolute left-0 top-0 h-px w-full bg-gradient-to-r from-transparent via-blue-500 to-transparent opacity-20" />
+            
+            <div className="mb-6 flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
               <div>
-                <div className="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-1">Break Rate</div>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-4xl font-extrabold text-white drop-shadow-[0_0_15px_rgba(255,255,255,0.2)]">{hits.length}</span>
-                  <span className="text-xl font-medium text-slate-500">/ {filteredData.length}</span>
-                </div>
-                <div className="mt-2 h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
-                  <motion.div 
-                    initial={{ width: 0 }}
-                    animate={{ width: filteredData.length > 0 ? `${(hits.length / filteredData.length) * 100}%` : "0%" }}
-                    transition={{ duration: 1.5, delay: 0.5, type: "spring" }}
-                    className="h-full bg-gradient-to-r from-blue-600 to-sky-400"
-                  />
-                </div>
-                <div className="mt-4 grid grid-cols-3 gap-2 text-xs uppercase tracking-wider">
-                  <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-emerald-300">
-                    <div className="font-bold">{hits.length}</div>
-                    <div className="text-[10px] text-emerald-200/80">Break</div>
-                  </div>
-                  <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-rose-300">
-                    <div className="font-bold">{misses.length}</div>
-                    <div className="text-[10px] text-rose-200/80">Miss</div>
-                  </div>
-                  <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-amber-300">
-                    <div className="font-bold">{unknowns.length}</div>
-                    <div className="text-[10px] text-amber-200/80">Unknown</div>
-                  </div>
-                </div>
+                <h2 className="flex items-center gap-3 text-xl font-bold text-white">
+                  <Target className="h-5 w-5 text-sky-400" /> Shot Placement Matrix
+                </h2>
+                <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">
+                  Each mark shows where the target sat relative to your bead at the shot. The plot is square with matching X/Y scales so distance in data units matches a true crosshair offset. The red + at the origin matches the ShotKam bead. Green shows the break window, red shows where misses leak, and the dashed guide tracks the average of what is currently visible.
+                  {selectedShot ? (
+                    <span className="mt-2 block text-xs text-slate-500">
+                      Click the same point again, press <kbd className="rounded border border-white/10 bg-slate-900/80 px-1 py-0.5 font-mono text-[10px] text-slate-400">Esc</kbd>
+                      , or use <span className="text-slate-400">Clear selection</span> beside the legend to drop the path, station highlight, and replay panel.
+                    </span>
+                  ) : null}
+                </p>
               </div>
-
-              <div className="pt-6 border-t border-slate-700/50">
-                <div className="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-3">{summaryPositionLabel}</div>
-                {summaryPosition ? (
-                  <>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="rounded-xl border border-sky-500/15 bg-sky-500/10 px-3 py-3">
-                        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Horizontal</div>
-                        <div className="mt-1 text-sm font-bold text-white">{describeHorizontalOffset(summaryPosition.x)}</div>
-                      </div>
-                      <div className="rounded-xl border border-emerald-500/15 bg-emerald-500/10 px-3 py-3">
-                        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Vertical</div>
-                        <div className="mt-1 text-sm font-bold text-white">{describeVerticalOffset(summaryPosition.y)}</div>
-                      </div>
-                    </div>
-                    <p className="mt-3 text-xs leading-relaxed text-slate-400">
-                      Read these as target position relative to your bead at the shot.
-                    </p>
-                  </>
-                ) : (
-                  <div className="text-sm font-medium text-slate-400">No successful breaks in the current filter.</div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="glass-panel rounded-2xl p-6">
-            <h3 className="text-slate-400 font-medium text-sm tracking-wider uppercase mb-4 flex items-center gap-2">
-               Filter Matrix
-            </h3>
-            <div className="space-y-4">
-              <div>
-                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider block mb-2">Presentation Angle</label>
-                <div className="relative">
-                  <select 
-                    title="Select Presentation Filter"
-                    className="w-full bg-slate-900/50 border border-slate-700/50 text-white rounded-xl p-3 text-sm appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500 transition cursor-pointer"
+              <div className="flex flex-col items-stretch gap-3 sm:items-end">
+                <div className="flex w-full flex-col gap-1.5 sm:w-auto sm:min-w-[10.5rem]">
+                  <label
+                    htmlFor="session-presentation-filter"
+                    className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500"
+                  >
+                    Presentation
+                  </label>
+                  <select
+                    id="session-presentation-filter"
+                    title="Filter chart by presentation angle"
+                    className="w-full cursor-pointer appearance-none rounded-xl border border-slate-700/60 bg-slate-950/80 py-2 pl-3 pr-8 text-sm text-white transition focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                     value={filter}
                     onChange={(e) => setFilter(e.target.value)}
                   >
@@ -1190,32 +1350,21 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                     <option value="moderate_right">Moderate Right</option>
                   </select>
                 </div>
-              </div>
-            </div>
-          </div>
-        </motion.div>
-
-        {/* Center: Main Chart Area */}
-        <motion.div variants={itemVariants} className="xl:col-span-3">
-          <div className="glass-panel rounded-2xl p-6 h-full flex flex-col min-h-[600px] relative overflow-hidden">
-            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500 to-transparent opacity-20" />
-            
-            <div className="mb-6 flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-              <div>
-                <h2 className="text-xl font-bold flex items-center gap-3 text-white">
-                  <Target className="w-5 h-5 text-sky-400" /> Shot Placement Matrix
-                </h2>
-                <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">
-                  Each mark shows where the target sat relative to your bead at the shot. Green shows the break window, red shows where misses leak, and the dashed guide tracks the average of what is currently visible.
-                  {selectedShot ? (
-                    <span className="mt-2 block text-xs text-slate-500">
-                      Click the same point again, press <kbd className="rounded border border-white/10 bg-slate-900/80 px-1 py-0.5 font-mono text-[10px] text-slate-400">Esc</kbd>
-                      , or use <span className="text-slate-400">Clear selection</span> above to drop the path, station highlight, and replay panel.
-                    </span>
-                  ) : null}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-3 text-[11px] font-bold uppercase tracking-[0.18em]">
+                {selectedShot ? (
+                  <button
+                    type="button"
+                    onClick={deselectShot}
+                    title="Clear selected shot (path highlight, station ring, replay panel). Press Esc."
+                    className="flex items-center justify-center gap-2 self-end rounded-full border border-white/15 bg-slate-900/70 px-3 py-2 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-200 shadow-sm transition hover:border-cyan-500/40 hover:bg-slate-800/90 hover:text-white"
+                  >
+                    <X className="h-3.5 w-3.5 text-cyan-400" aria-hidden />
+                    <span>Clear selection</span>
+                    <kbd className="hidden rounded border border-white/10 bg-slate-950/80 px-1.5 py-0.5 font-mono text-[9px] font-semibold normal-case tracking-normal text-slate-500 sm:inline">
+                      Esc
+                    </kbd>
+                  </button>
+                ) : null}
+              <div className="flex flex-wrap justify-end gap-3 text-[11px] font-bold uppercase tracking-[0.18em]">
                 <div className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-3 py-2 text-slate-300">
                   <span className="relative block h-3.5 w-3.5">
                     <span className="absolute inset-0 rounded-full bg-emerald-400/20" />
@@ -1242,6 +1391,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                   Visible Avg
                 </div>
               </div>
+              </div>
             </div>
 
             <div className="mb-5 grid gap-3 md:grid-cols-3">
@@ -1262,9 +1412,34 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                 </div>
               </div>
             </div>
-            
+
+            <div className="grid gap-5 xl:grid-cols-12 xl:items-stretch xl:gap-6">
+              <div className="flex min-h-0 w-full flex-col xl:col-span-3 xl:h-full">
+                <div className="flex h-full min-h-[420px] w-full flex-col justify-between gap-8 rounded-2xl border border-white/10 bg-slate-950/30 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] xl:min-h-0 xl:sticky xl:top-24 xl:max-h-[calc(100vh-8rem)] xl:overflow-y-auto">
+                  <div>
+                    <h3 className="mb-4 text-[10px] font-bold uppercase tracking-[0.22em] text-slate-500">Trajectory</h3>
+                    <TrajectorySelector
+                      relaxed
+                      shotCounts={presentationShotCounts}
+                      selected={filter}
+                      highlighted={selectedShot?.presentation}
+                      onSelect={setFilter}
+                    />
+                  </div>
+                  <div className="border-t border-white/10 pt-8">
+                    <TrapHouseSelector
+                      relaxed
+                      shotCounts={stationShotCounts}
+                      selected={stationFilter}
+                      highlighted={selectedShot?.station}
+                      onSelect={setStationFilter}
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="flex min-h-0 w-full min-w-0 flex-col xl:col-span-9 xl:h-full">
             {/* The Chart Background */}
-            <div className="flex-1 min-h-[420px] w-full rounded-[24px] border border-slate-800/80 bg-[#08111f] p-5 shadow-[inset_0_0_60px_rgba(2,6,23,0.85)] relative overflow-hidden group cursor-crosshair">
+            <div className="relative flex min-h-[420px] w-full flex-1 flex-col overflow-hidden rounded-[24px] border border-slate-800/80 bg-[#08111f] p-5 shadow-[inset_0_0_60px_rgba(2,6,23,0.85)] group cursor-crosshair">
               <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(14,165,233,0.08),transparent_42%),radial-gradient(circle_at_bottom_right,rgba(16,185,129,0.08),transparent_34%)]" />
               <div className="pointer-events-none absolute inset-x-6 top-1/2 h-px -translate-y-1/2 bg-cyan-400/15" />
               <div className="pointer-events-none absolute inset-y-6 left-1/2 w-px -translate-x-1/2 bg-cyan-400/15" />
@@ -1274,13 +1449,16 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
               <p className="absolute left-3 top-1/2 -translate-y-1/2 -rotate-90 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Target Left Of Bead</p>
               <p className="absolute right-3 top-1/2 translate-y-1/2 rotate-90 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Target Right Of Bead</p>
               
-              <ResponsiveContainer width="100%" height={420}>
+              <div className="relative flex min-h-0 flex-1 flex-col justify-center">
+              <div className="relative mx-auto aspect-square w-full max-w-[420px] shrink-0 [&_*]:!outline-none [&_*]:focus:!outline-none [&_*]:focus-visible:!outline-none">
+                <ResponsiveContainer width="100%" height="100%">
                 <ScatterChart margin={{ top: 28, right: 26, bottom: 28, left: 26 }}>
                   <CartesianGrid strokeDasharray="3 5" stroke="#1e293b" opacity={0.45} horizontal={true} vertical={true} />
                   <XAxis
                     type="number"
                     dataKey="x"
-                    domain={chartXDomain}
+                    domain={chartDomain}
+                    allowDataOverflow={false}
                     stroke="#334155"
                     tick={{ fill: "#94a3b8", fontSize: 12 }}
                     axisLine={{ stroke: "#334155" }}
@@ -1289,20 +1467,33 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                   <YAxis
                     type="number"
                     dataKey="y"
-                    domain={chartYDomain}
+                    domain={chartDomain}
+                    allowDataOverflow={false}
                     stroke="#334155"
                     tick={{ fill: "#94a3b8", fontSize: 12 }}
                     axisLine={{ stroke: "#334155" }}
                     tickLine={{ stroke: "#334155" }}
                   />
                   <ZAxis type="number" range={[150, 150]} />
-                  <RechartsTooltip cursor={{ strokeDasharray: "4 4", stroke: "#60a5fa", strokeOpacity: 0.45 }} content={<ShotPlacementTooltip />} />
+                  <RechartsTooltip cursor={false} content={<ShotPlacementTooltip />} />
                   <ReferenceLine x={0} stroke="#38bdf8" strokeOpacity={0.22} />
                   <ReferenceLine y={0} stroke="#38bdf8" strokeOpacity={0.22} />
-                  
-                  {/* Crosshair Center */}
-                  <ReferenceDot x={0} y={0} r={5.5} fill="#e2e8f0" stroke="#38bdf8" strokeWidth={2} label={{ position: 'top', value: 'Bead Center', fill: '#cbd5e1', fontSize: 11, fontWeight: 700 }} />
-                  <ReferenceDot x={0} y={0} r={12} fill="none" stroke="#38bdf8" strokeWidth={1.25} strokeOpacity={0.4} />
+
+                  <ReferenceDot
+                    x={0}
+                    y={0}
+                    r={0}
+                    fill="none"
+                    stroke="none"
+                    shape={(dotProps) => <BeadCenterCrosshairShape cx={dotProps.cx} cy={dotProps.cy} />}
+                    label={{
+                      position: "top",
+                      value: "Bead Center",
+                      fill: "#cbd5e1",
+                      fontSize: 11,
+                      fontWeight: 700,
+                    }}
+                  />
 
                   {/* Average guides for all currently visible shots */}
                   {averageVisiblePosition && (
@@ -1374,9 +1565,13 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                     shape={(props: unknown) => <TrajectoryUnknown {...(props as TrajectoryShapeProps)} onClickShot={handleSelectShot} anySelected={!!selectedShot} isSelected={selectedShot?.id === (props as TrajectoryShapeProps).payload?.id} />} 
                   />
                 </ScatterChart>
-              </ResponsiveContainer>
+                </ResponsiveContainer>
+              </div>
+              </div>
             </div>
-            
+              </div>
+            </div>
+
             <motion.div 
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1549,13 +1744,13 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                     </div>
                   </div>
                 </div>
-                <div className="w-full bg-slate-900 rounded-lg overflow-hidden flex flex-col items-center justify-center border border-slate-700/50 shadow-[inset_0_0_20px_rgba(0,0,0,0.5)] z-10 relative" style={{ height: "450px" }}>
+                <div className="w-full bg-slate-900 rounded-lg overflow-hidden flex flex-col items-center justify-center border border-slate-700/50 shadow-[inset_0_0_20px_rgba(0,0,0,0.5)] z-10 relative" style={{ height: "65vh", minHeight: "400px", maxHeight: "800px" }}>
                   <div
-                    className="relative bg-slate-900 rounded-lg overflow-hidden border border-slate-700 shadow-xl max-w-full"
+                    className="relative bg-slate-900 rounded-lg overflow-hidden border border-slate-700 shadow-xl"
                     style={{
-                      width: "100%",
+                      height: "100%",
+                      maxWidth: "100%",
                       aspectRatio: overlayAspectRatio,
-                      maxHeight: "70vh",
                     }}
                   >
                     {replayMode === "video" ? (
@@ -1585,10 +1780,9 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
               </motion.div>
             )}
           </div>
-        </motion.div>
-        
+
         {/* Bottom Drilldown Row */}
-        <motion.div variants={itemVariants} className="xl:col-span-4 mt-2">
+        <motion.div variants={itemVariants} className="mt-2">
           <div className="glass-panel rounded-2xl p-6 relative overflow-hidden">
             <h2 className="text-lg font-bold flex items-center gap-2 mb-6 text-white border-b border-white/10 pb-4">
               <Video className="w-5 h-5 text-indigo-400" /> Shot Trace Logs & Manual Override
@@ -1648,6 +1842,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
         </motion.div>
 
         <ValidationPanel shots={shotData} />
+        </motion.div>
 
       </div>
 

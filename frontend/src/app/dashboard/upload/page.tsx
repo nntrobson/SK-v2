@@ -31,7 +31,7 @@ export default function UploadPage() {
       setSuccess(true);
     } catch (error) {
       console.error("Transmission failed:", error);
-      alert("Error: Neural Uplink Failed. Verify the backend is online.");
+      alert("Error: Upload Failed. Verify the backend is online.");
       setUploading(false);
     }
   }
@@ -130,7 +130,7 @@ export default function UploadPage() {
               </motion.div>
               
               <h3 className="font-bold text-xl text-white mb-2 tracking-wide">
-                {file ? file.name : 'Initialize Neural Uplink'}
+                {file ? file.name : 'Upload Video'}
               </h3>
               <p className="text-slate-400 mb-6 font-light">
                 {file ? `${(file.size / 1024 / 1024).toFixed(2)} MB Payload Ready` : 'Drag ShotKam .avi/.mp4 or browse files.'}

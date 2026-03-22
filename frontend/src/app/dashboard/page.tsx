@@ -22,7 +22,7 @@ export default function DashboardOverviewLayout() {
         <div className="absolute inset-0 bg-gradient-to-r from-blue-600/20 to-sky-400/5 z-0" />
         <div className="relative z-10 max-w-2xl">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/20 border border-blue-500/30 text-blue-400 text-xs font-bold uppercase tracking-widest mb-6">
-            Neural Analysis Active
+            Video Analysis Active
           </div>
           <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight text-white mb-4 leading-tight">
             Analyze your limits.<br />Break more clays.
@@ -69,8 +69,8 @@ export default function DashboardOverviewLayout() {
         
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="glass-panel rounded-2xl p-6 relative overflow-hidden md:col-span-2 flex flex-col justify-between">
            <h3 className="text-slate-400 font-semibold uppercase tracking-wider text-xs mb-4">Performance Velocity</h3>
-           <div className="h-24 w-full">
-            <ResponsiveContainer width="100%" height="100%">
+           <div className="h-24 w-full min-h-[96px]">
+            <ResponsiveContainer width="100%" height={96}>
               <AreaChart data={TREND_DATA} margin={{ top: 5, right: 0, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="colorAvg" x1="0" y1="0" x2="0" y2="1">

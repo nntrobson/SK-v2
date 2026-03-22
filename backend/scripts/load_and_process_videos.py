@@ -15,50 +15,49 @@ from cv_pipeline.pipeline import analyze_video_file
 
 VIDEO_DIR = Path("/Users/Nick_Robson/Library/CloudStorage/OneDrive-McKinsey&Company/Documents/Cursor/Shotkam/data/uploaded_videos")
 
-VIDEOS = [
-    "20240608122032SHOT0018.MP4",
-    "20240608122050SHOT0019.MP4",
-    "20240608123302SHOT0020.MP4",
-    "20240608123346SHOT0021.MP4",
-    "20240608123406SHOT0022.MP4",
-    "20240608123424SHOT0023.MP4",
-    "20240608123444SHOT0024.MP4",
-    "20240608123502SHOT0025.MP4",
-    "20240608123518SHOT0026.MP4",
-    "20240608123540SHOT0027.MP4",
-]
+DATE_LABELS = {
+    "20240526": ("May 26, 2024", datetime.datetime(2024, 5, 26)),
+    "20240608": ("June 8, 2024", datetime.datetime(2024, 6, 8)),
+    "20240609": ("June 9, 2024", datetime.datetime(2024, 6, 9)),
+    "20240623": ("June 23, 2024", datetime.datetime(2024, 6, 23)),
+    "20240817": ("August 17, 2024", datetime.datetime(2024, 8, 17)),
+}
 
 
-def main() -> int:
-    db = SessionLocal()
-
-    session_date = datetime.datetime(2024, 6, 8)
+def _get_or_create_session_and_round(db, date_prefix: str):
+    label, session_date = DATE_LABELS.get(date_prefix, (f"Session {date_prefix}", datetime.datetime.strptime(date_prefix, "%Y%m%d")))
     session = db.query(models.Session).filter(models.Session.date == session_date).first()
     if not session:
-        session = models.Session(
-            date=session_date,
-            metadata_json={"venue": "Silver Dollar Club", "notes": "June 8 2024 session"},
-        )
+        session = models.Session(date=session_date, metadata_json={"venue": "Silver Dollar Club", "notes": label})
         db.add(session)
         db.commit()
         db.refresh(session)
-
     round_entry = db.query(models.Round).filter(models.Round.session_id == session.id).first()
     if not round_entry:
         round_entry = models.Round(session_id=session.id, type="Trap Singles")
         db.add(round_entry)
         db.commit()
         db.refresh(round_entry)
+    return session, round_entry
 
-    for idx, filename in enumerate(VIDEOS, start=1):
+
+def main() -> int:
+    db = SessionLocal()
+
+    all_files = sorted(f for f in os.listdir(VIDEO_DIR) if f.upper().endswith(".MP4"))
+    total = len(all_files)
+    print(f"Found {total} videos in {VIDEO_DIR}")
+
+    for idx, filename in enumerate(all_files, start=1):
         filepath = str(VIDEO_DIR / filename)
+        date_prefix = filename[:8]
+        _, round_entry = _get_or_create_session_and_round(db, date_prefix)
         if not os.path.exists(filepath):
-            print(f"[{idx}/{len(VIDEOS)}] MISSING: {filename}")
+            print(f"[{idx}/{total}] MISSING: {filename}")
             continue
 
         existing = db.query(models.Video).filter(models.Video.filepath == filepath).first()
         if existing:
-            print(f"[{idx}/{len(VIDEOS)}] Already loaded: {filename} (video_id={existing.id})")
             for shot in db.query(models.Shot).filter(models.Shot.video_id == existing.id).all():
                 db.query(models.ShotMeasurement).filter(models.ShotMeasurement.shot_id == shot.id).delete()
             db.query(models.Shot).filter(models.Shot.video_id == existing.id).delete()
@@ -71,13 +70,9 @@ def main() -> int:
             db.commit()
             db.refresh(video)
 
-        print(f"[{idx}/{len(VIDEOS)}] Processing {filename} (video_id={video.id})")
+        print(f"[{idx}/{total}] Processing {filename} (video_id={video.id})")
         try:
             analysis = analyze_video_file(filepath, frame_stride=15)
-
-            for shot in db.query(models.Shot).filter(models.Shot.video_id == video.id).all():
-                db.query(models.ShotMeasurement).filter(models.ShotMeasurement.shot_id == shot.id).delete()
-            db.query(models.Shot).filter(models.Shot.video_id == video.id).delete()
 
             new_shot = models.Shot(
                 video_id=video.id,
@@ -107,9 +102,9 @@ def main() -> int:
             db.add(meas)
             video.status = "completed"
             db.commit()
-            print(f"[{idx}/{len(VIDEOS)}] Done: station={analysis['station']} break={analysis['break_label']}")
+            print(f"[{idx}/{total}] Done: station={analysis['station']} break={analysis['break_label']}")
         except Exception as exc:
-            print(f"[{idx}/{len(VIDEOS)}] FAILED: {exc}")
+            print(f"[{idx}/{total}] FAILED: {exc}")
             video.status = "error"
             db.commit()
 

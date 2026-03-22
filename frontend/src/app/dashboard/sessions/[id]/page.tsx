@@ -661,10 +661,10 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
   const [selectedShot, setSelectedShot] = useState<ShotData | null>(null);
   const [replayMode, setReplayMode] = useState<"photo" | "video">("photo");
   const [activeOverlayFrame, setActiveOverlayFrame] = useState<TrackingFrame | null>(null);
-  const [interpolatedBoxes, setInterpolatedBoxes] = useState<OverlayBox[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
   const requestRef = useRef<number | null>(null);
   const lastVideoTimeRef = useRef<number>(-1);
+  const videoOverlayContainerRef = useRef<HTMLDivElement>(null);
   
   // Categorization states
   const [isEditingSession, setIsEditingSession] = useState(false);
@@ -763,7 +763,6 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
     setSelectedShot(shot);
     setReplayMode("photo");
     setActiveOverlayFrame(getPhotoFrame(shot));
-    setInterpolatedBoxes([]);
     lastVideoTimeRef.current = -1;
   };
 
@@ -773,23 +772,97 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
       return;
     }
 
+    const overlayClassColors: Record<string, string> = {
+      "clay-targets": "#34d399",
+      "broken-clay": "#fbbf24",
+      "trap-house": "#38bdf8",
+      "trap-house-1-2": "#60a5fa",
+      "trap-house-4-5": "#a78bfa",
+    };
+
     const animate = () => {
       const video = videoRef.current;
-      if (video) {
-        const vTime = video.currentTime;
-        if (Math.abs(vTime - lastVideoTimeRef.current) > 0.005) {
-          lastVideoTimeRef.current = vTime;
-          const result = getInterpolatedOverlayForTime(selectedShot.tracking_data, vTime);
-          setActiveOverlayFrame(result.frame);
-          setInterpolatedBoxes(result.boxes);
-        }
+      const container = videoOverlayContainerRef.current;
+      if (!video || !container) {
+        requestRef.current = requestAnimationFrame(animate);
+        return;
       }
+
+      const vTime = video.currentTime;
+      if (Math.abs(vTime - lastVideoTimeRef.current) < 0.005) {
+        requestRef.current = requestAnimationFrame(animate);
+        return;
+      }
+      lastVideoTimeRef.current = vTime;
+
+      const result = getInterpolatedOverlayForTime(selectedShot.tracking_data, vTime);
+      const boxes = result.boxes;
+      const cxHalf = selectedShot.tracking_data?.[0]?.crosshair_x;
+      const cyHalf = selectedShot.tracking_data?.[0]?.crosshair_y;
+      const fullW = cxHalf ? cxHalf * 2 : 1;
+      const fullH = cyHalf ? cyHalf * 2 : 1;
+
+      while (container.children.length > boxes.length) {
+        container.removeChild(container.lastChild!);
+      }
+      while (container.children.length < boxes.length) {
+        const wrapper = document.createElement("div");
+        wrapper.style.position = "absolute";
+        wrapper.style.pointerEvents = "none";
+        wrapper.style.zIndex = "20";
+        const inner = document.createElement("div");
+        inner.style.width = "100%";
+        inner.style.height = "100%";
+        inner.style.borderWidth = "1.5px";
+        inner.style.borderStyle = "solid";
+        inner.style.borderRadius = "2px";
+        inner.style.position = "relative";
+        const label = document.createElement("span");
+        label.style.position = "absolute";
+        label.style.top = "-18px";
+        label.style.left = "0";
+        label.style.whiteSpace = "nowrap";
+        label.style.fontSize = "9px";
+        label.style.fontFamily = "monospace";
+        label.style.fontWeight = "600";
+        label.style.background = "rgba(2,6,23,0.8)";
+        label.style.padding = "1px 4px";
+        label.style.borderRadius = "2px";
+        inner.appendChild(label);
+        wrapper.appendChild(inner);
+        container.appendChild(wrapper);
+      }
+
+      for (let i = 0; i < boxes.length; i++) {
+        const box = boxes[i];
+        const bbox = normalizeBbox(box);
+        const el = container.children[i] as HTMLDivElement;
+        if (!bbox) {
+          el.style.display = "none";
+          continue;
+        }
+        const color = overlayClassColors[(box.class_name ?? "").toLowerCase()] ?? "#ffffff";
+        el.style.display = "block";
+        el.style.left = `${(bbox.x / fullW) * 100}%`;
+        el.style.top = `${(bbox.y / fullH) * 100}%`;
+        el.style.width = `${(bbox.width / fullW) * 100}%`;
+        el.style.height = `${(bbox.height / fullH) * 100}%`;
+        const inner = el.firstChild as HTMLDivElement;
+        inner.style.borderColor = color;
+        const label = inner.firstChild as HTMLSpanElement;
+        label.style.color = color;
+        label.textContent = `${(box.class_name ?? "").replace(/-/g, " ")} ${(box.confidence ?? 0).toFixed(2)}`;
+      }
+
       requestRef.current = requestAnimationFrame(animate);
     };
 
     requestRef.current = requestAnimationFrame(animate);
     return () => {
       if (requestRef.current !== null) cancelAnimationFrame(requestRef.current);
+      if (videoOverlayContainerRef.current) {
+        videoOverlayContainerRef.current.innerHTML = "";
+      }
     };
   }, [replayMode, selectedShot]);
 
@@ -805,11 +878,11 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
   const averageHitPosition = getAveragePosition(hits);
   const photoFrame = selectedShot ? getPhotoFrame(selectedShot) : null;
   const activeFrame = replayMode === "video" ? activeOverlayFrame : photoFrame;
-  const overlayBoxes = replayMode === "video"
-    ? interpolatedBoxes.length ? interpolatedBoxes : (activeFrame?.overlay_boxes ?? [])
-    : selectedShot?.pretrigger_boxes?.length
-      ? selectedShot.pretrigger_boxes
-      : photoFrame?.overlay_boxes ?? [];
+  const overlayBoxes = replayMode === "photo"
+    ? (selectedShot?.pretrigger_boxes?.length
+        ? selectedShot.pretrigger_boxes
+        : photoFrame?.overlay_boxes ?? [])
+    : [];
   const baseCrosshairX = activeFrame?.crosshair_x ?? selectedShot?.crosshair_x ?? selectedShot?.tracking_data?.[0]?.crosshair_x;
   const baseCrosshairY = activeFrame?.crosshair_y ?? selectedShot?.crosshair_y ?? selectedShot?.tracking_data?.[0]?.crosshair_y;
   const overlayAspectRatio = selectedShot?.tracking_data?.length
@@ -1113,30 +1186,6 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
               </ResponsiveContainer>
             </div>
             
-            <motion.div 
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 1 }}
-              className="mt-6 p-5 glass-panel rounded-xl flex items-start gap-4 border-blue-500/20 bg-blue-900/10"
-            >
-              <div className="p-2 rounded-full bg-blue-500/20 text-blue-400 mt-0.5">
-                <Sparkles className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="font-semibold text-white mb-1">AI Pipeline Insight</h4>
-                <p className="text-sm text-slate-300 leading-relaxed font-light">
-                  {averageHitPosition ? (
-                    <>
-                      Your break centroid is anchored <strong>{Math.abs(averageHitPosition.x).toFixed(1)}&quot; to the {averageHitPosition.x > 0 ? "Right": "Left"}</strong> and <strong>{averageHitPosition.y.toFixed(1)}&quot; High</strong> relative to the crosshair. The new guide lines show the average position of every visible shot, making it easier to spot when misses are pulling the overall pattern off-center. Maintain smoother gun speed on <em>{filter === 'all' ? 'hard angles' : filter}</em>.
-                    </>
-                  ) : (
-                    <>
-                      The average guide lines now track every visible shot in the matrix, even when there are no successful breaks in the current filter. Use that overlay to judge whether the overall pattern is drifting left, right, high, or low before the break centroid reappears.
-                    </>
-                  )}
-                </p>
-              </div>
-            </motion.div>
             
             {/* Selected Shot Image Video Panel */}
             {selectedShot && (
@@ -1215,7 +1264,11 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                       />
                     )}
 
-                    <OverlayBoxes boxes={overlayBoxes} crosshairX={baseCrosshairX} crosshairY={baseCrosshairY} />
+                    {replayMode === "video" ? (
+                      <div ref={videoOverlayContainerRef} className="absolute inset-0 pointer-events-none z-20" />
+                    ) : (
+                      <OverlayBoxes boxes={overlayBoxes} crosshairX={baseCrosshairX} crosshairY={baseCrosshairY} />
+                    )}
                   </div>
                 </div>
               </motion.div>

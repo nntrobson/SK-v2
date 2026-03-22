@@ -194,11 +194,20 @@ def build_pretrigger_track(
             "pretrigger_boxes": [],
         }
 
+    # Use the point 3 frames backward from the last pre-trigger point if available
+    last_point_idx = next((i for i, f in enumerate(frames) if float(f.get("time", 0.0)) == track_points[-1]["time"]), -1)
+    if last_point_idx != -1:
+        target_idx = max(0, last_point_idx - 3)
+        target_frame = frames[target_idx]
+        pretrigger_time = round(float(target_frame["time"]), 4)
+    else:
+        pretrigger_time = track_points[-1]["time"]
+
     last_point = track_points[-1]
     return {
         "tracking_data": track_points,
         "trajectory": trajectory,
-        "pretrigger_time": last_point["time"],
+        "pretrigger_time": pretrigger_time,
         "clay_x": last_point["clay_x"],
         "clay_y": last_point["clay_y"],
         "crosshair_x": last_point["crosshair_x"],

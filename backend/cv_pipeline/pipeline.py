@@ -84,21 +84,37 @@ def determine_decision_frame(
     if not post_trigger_frames:
         return _nearest_frame(frames, trigger_time)
 
+    decision_frame = None
     if break_label == "break":
         for frame in post_trigger_frames:
             for box in frame.get("overlay_boxes", []):
                 if canonical_class_name(box.get("class_name")) == "broken-clay" and float(box.get("confidence", 0.0)) >= break_threshold:
-                    return frame
+                    decision_frame = frame
+                    break
+            if decision_frame:
+                break
     elif break_label == "miss":
         for frame in post_trigger_frames:
             for box in frame.get("overlay_boxes", []):
                 if canonical_class_name(box.get("class_name")) == "clay-targets" and float(box.get("confidence", 0.0)) >= miss_threshold:
-                    return frame
+                    decision_frame = frame
+                    break
+            if decision_frame:
+                break
 
-    return max(
-        post_trigger_frames,
-        key=lambda frame: max((float(box.get("confidence", 0.0)) for box in frame.get("overlay_boxes", [])), default=0.0),
-    )
+    if not decision_frame:
+        decision_frame = max(
+            post_trigger_frames,
+            key=lambda frame: max((float(box.get("confidence", 0.0)) for box in frame.get("overlay_boxes", [])), default=0.0),
+        )
+
+    # Move the decision frame backward by 1 frame if possible
+    decision_idx = next((i for i, f in enumerate(frames) if f == decision_frame), -1)
+    if decision_idx != -1:
+        decision_idx = max(0, decision_idx - 1)
+        return frames[decision_idx]
+    
+    return decision_frame
 
 
 def analyze_video_file(
@@ -167,6 +183,7 @@ def analyze_video_file(
                 "time": round(frame_idx / fps, 4),
                 "frame_idx": frame_idx,
                 "overlay_boxes": overlay_boxes,
+                "raw_predictions": predictions,
             }
         )
         frame_idx += 1

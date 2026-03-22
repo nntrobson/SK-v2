@@ -16,11 +16,11 @@ PACKAGE_SPEC_VERSION = "validation-package/v1"
 DEFAULT_SCREENSHOT_COUNT = 18
 
 CLASS_COLORS = {
-    "clay-targets": (46, 204, 113),
-    "broken-clay": (52, 152, 219),
-    "trap-house": (241, 196, 15),
-    "trap-house-1-2": (155, 89, 182),
-    "trap-house-4-5": (230, 126, 34),
+    "clay-targets": (0, 165, 255),  # BGR format for Orange
+    "broken-clay": (255, 0, 0),     # Blue
+    "trap-house": (0, 255, 0),      # Green
+    "trap-house-1-2": (0, 255, 0),  # Green
+    "trap-house-4-5": (0, 255, 0),  # Green
 }
 
 MARKER_STYLES = {
@@ -132,16 +132,47 @@ def draw_overlay_boxes(frame: np.ndarray, overlay_boxes: list[dict], timestamp_m
 
         class_name = overlay_box.get("class_name", "unknown")
         color = CLASS_COLORS.get(class_name, (255, 255, 255))
+        
+        # Bbox from Roboflow is already absolute pixels, but some old parsing might have 
+        # stored x,y as centers. Let's make sure we just use the bbox coordinates directly
         x1 = int(round(float(bbox["x"])))
         y1 = int(round(float(bbox["y"])))
-        x2 = int(round(float(bbox["x"]) + float(bbox["width"])))
-        y2 = int(round(float(bbox["y"]) + float(bbox["height"])))
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+        
+        width = float(bbox["width"])
+        height = float(bbox["height"])
+        
+        # Double size for clays
+        if class_name in ["clay-targets", "broken-clay"]:
+            center_x = x1 + width / 2
+            center_y = y1 + height / 2
+            width *= 2
+            height *= 2
+            x1 = int(round(center_x - width / 2))
+            y1 = int(round(center_y - height / 2))
+            
+        x2 = int(round(x1 + width))
+        y2 = int(round(y1 + height))
+        
+        thickness = 4 if class_name in ["clay-targets", "broken-clay"] else 3
+        
+        # Increase trap house box size visually by drawing it slightly larger
+        if "trap-house" in class_name:
+            # 1.5x width/height
+            center_x = x1 + width / 2
+            center_y = y1 + height / 2
+            width *= 1.5
+            height *= 1.5
+            x1 = int(round(center_x - width / 2))
+            y1 = int(round(center_y - height / 2))
+            x2 = int(round(x1 + width))
+            y2 = int(round(y1 + height))
+
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, thickness)
         label = f"{class_name} {float(overlay_box.get('confidence', 0.0)):.2f}"
-        cv2.putText(annotated, label, (x1, max(18, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA)
+        cv2.putText(annotated, label, (x1, max(18, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, thickness, cv2.LINE_AA)
 
     if timestamp_ms is not None:
-        label = f"{timestamp_ms} ms"
+        label = f"{timestamp_ms / 1000.0:.3f}s"
         text_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
         top_right_x = annotated.shape[1] - text_size[0] - 20
         cv2.putText(
@@ -205,7 +236,8 @@ def render_waveform_panel(
             continue
         style = MARKER_STYLES[marker_name]
         cv2.line(panel, (marker_x, chart_top), (marker_x, chart_bottom), style["color"], 2)
-        cv2.putText(panel, style["label"], (max(5, marker_x - 36), 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, style["color"], 1, cv2.LINE_AA)
+        label_text = f"{style['label']} ({marker_time:.3f}s)"
+        cv2.putText(panel, label_text, (max(5, marker_x - 36), 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, style["color"], 1, cv2.LINE_AA)
 
     playhead_x = time_to_x(current_time)
     if playhead_x is not None:
@@ -395,6 +427,60 @@ def _screenshot_filename(index: int, label: str, frame_idx: int) -> str:
     return f"{index:02d}_{_safe_label(label)}_frame_{frame_idx:05d}.jpg"
 
 
+def _interpolate_raw_predictions(
+    frame_analysis: list[dict],
+    tracking_idx: int,
+    frame_idx: int,
+) -> list[dict]:
+    if not frame_analysis:
+        return []
+
+    prev = frame_analysis[min(tracking_idx, len(frame_analysis) - 1)]
+    prev_frame_idx = int(prev.get("frame_idx", 0))
+
+    if tracking_idx + 1 >= len(frame_analysis) or frame_idx <= prev_frame_idx:
+        return prev.get("raw_predictions", [])
+
+    nxt = frame_analysis[tracking_idx + 1]
+    nxt_frame_idx = int(nxt.get("frame_idx", prev_frame_idx + 1))
+    span = max(nxt_frame_idx - prev_frame_idx, 1)
+    t = min(1.0, max(0.0, (frame_idx - prev_frame_idx) / span))
+
+    prev_preds = prev.get("raw_predictions", [])
+    nxt_preds = nxt.get("raw_predictions", [])
+
+    if not prev_preds:
+        return prev_preds
+    if not nxt_preds:
+        return prev_preds
+
+    # We match raw predictions by class name. If there are multiple of the same class, we match the best confidence.
+    prev_by_class: dict[str, dict] = {}
+    for p in prev_preds:
+        cn = (p.get("class") or "").lower()
+        if cn not in prev_by_class or p.get("confidence", 0) > prev_by_class[cn].get("confidence", 0):
+            prev_by_class[cn] = p
+
+    nxt_by_class: dict[str, dict] = {}
+    for p in nxt_preds:
+        cn = (p.get("class") or "").lower()
+        if cn not in nxt_by_class or p.get("confidence", 0) > nxt_by_class[cn].get("confidence", 0):
+            nxt_by_class[cn] = p
+
+    result: list[dict] = []
+    for cn, p_a in prev_by_class.items():
+        p_b = nxt_by_class.get(cn)
+        if p_b:
+            interpolated = dict(p_a)
+            for key in ("x", "y", "width", "height", "confidence"):
+                if key in p_a and key in p_b:
+                    interpolated[key] = round(_lerp(float(p_a[key]), float(p_b[key]), t), 2)
+            result.append(interpolated)
+        else:
+            result.append(p_a)
+
+    return result
+
 def write_validation_package(
     analysis: dict,
     output_root: Path,
@@ -470,8 +556,19 @@ def write_validation_package(
     }
 
     tracking_data = analysis["tracking_data"]
+    frame_analysis_data = analysis.get("frame_analysis", [])
     tracking_idx = 0
     total_frames = int(analysis["total_frames"])
+    
+    try:
+        from cv_pipeline.stabilizer import GlobalMotionStabilizer, TrajectoryVisualizer
+        stabilizer = GlobalMotionStabilizer()
+        visualizer = TrajectoryVisualizer(fps=int(fps), trace_length=int(fps * 20))
+    except Exception as e:
+        print(f"Stabilizer not available: {e}")
+        stabilizer = None
+        visualizer = None
+
     for frame_idx in range(total_frames):
         frame = _read_frame(cap, frame_idx)
         if frame is None:
@@ -481,8 +578,19 @@ def write_validation_package(
             tracking_idx += 1
 
         overlay_boxes = _interpolate_overlay_boxes(tracking_data, tracking_idx, frame_idx)
+        annotated_frame = frame.copy()
+
+        if stabilizer and visualizer:
+            raw_preds = _interpolate_raw_predictions(frame_analysis_data, tracking_idx, frame_idx)
+            transform_matrix = stabilizer.process_frame(annotated_frame)
+            stabilized_preds = stabilizer.stabilize_predictions(raw_preds, transform_matrix)
+            annotated_frame, _ = visualizer.process_and_annotate(annotated_frame, stabilized_preds, transform_matrix)
+
+        # Still draw overlay boxes (like trap house, or high-confidence broken clay)
+        # But we might filter out clay-targets if the visualizer already draws them nicely,
+        # but drawing both is also fine (it adds the confidence score which is nice).
         annotated_frame = draw_overlay_boxes(
-            frame,
+            annotated_frame,
             overlay_boxes,
             timestamp_ms=int(round((frame_idx / fps) * 1000)),
         )

@@ -200,6 +200,9 @@ function getProportionalSymmetricDomain(
     0,
   );
   const extent = Math.max(minimumExtent, Math.ceil((maxAbs + padding) * 2) / 2);
+  
+  // Enforce a strict 1:1 scale (X scale = Y scale) by returning exactly symmetric bounds.
+  // The scatter plot area must be exactly square (aspect-square) for this to map 1 unit = 1 pixel linearly on both axes
   return [-extent, extent];
 }
 
@@ -1180,8 +1183,9 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
   const averageVisiblePosition = getAveragePosition(filteredData);
   const averageHitPosition = getAveragePosition(hits);
   const averageMissPosition = getAveragePosition(misses);
-  const chartDomain = useMemo(() => getProportionalSymmetricDomain(filteredData, 10, 1.5), [filteredData]);
-  const breakHalf = Math.max(1.2, chartDomain[1] * 0.155);
+  const maxAbs = Math.max(Math.abs(chartDomain[0]), Math.abs(chartDomain[1]));
+  const symmetricDomain = [-maxAbs, maxAbs] as [number, number];
+  const breakHalf = Math.max(1.2, maxAbs * 0.155);
   const breakWindowHalfWidth = breakHalf;
   const breakWindowHalfHeight = breakHalf;
   const shotPatternSummary = useMemo(() => getShotPatternSummary({
@@ -1457,7 +1461,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                   <XAxis
                     type="number"
                     dataKey="x"
-                    domain={chartDomain}
+                    domain={symmetricDomain}
                     allowDataOverflow={false}
                     stroke="#334155"
                     tick={{ fill: "#94a3b8", fontSize: 12 }}
@@ -1467,7 +1471,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                   <YAxis
                     type="number"
                     dataKey="y"
-                    domain={chartDomain}
+                    domain={symmetricDomain}
                     allowDataOverflow={false}
                     stroke="#334155"
                     tick={{ fill: "#94a3b8", fontSize: 12 }}

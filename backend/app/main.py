@@ -1,5 +1,8 @@
+from typing import Optional
+
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app import database, models
 from app.shot_payloads import serialize_session_shot
@@ -60,6 +63,42 @@ def get_session_shots(session_id: int, db: Session = Depends(database.get_db)):
                 meas = db.query(models.ShotMeasurement).filter(models.ShotMeasurement.shot_id == s.id).first()
                 res.append(serialize_session_shot(shot=s, measurement=meas, video=v))
     return res
+
+
+class ShotClassificationUpdate(BaseModel):
+    break_label: Optional[str] = None
+    station: Optional[str] = None
+    presentation: Optional[str] = None
+
+
+@app.patch("/api/shots/{shot_id}")
+def patch_shot_classification(shot_id: int, body: ShotClassificationUpdate, db: Session = Depends(database.get_db)):
+    shot = db.query(models.Shot).filter(models.Shot.id == shot_id).first()
+    if not shot:
+        return Response(status_code=404)
+
+    if body.break_label is not None:
+        label = body.break_label.strip().lower()
+        if label not in ("break", "miss", "unknown"):
+            return Response(status_code=422)
+        shot.break_label = label
+
+    if body.station is not None:
+        st = body.station.strip().lower()
+        shot.station = st if st else None
+
+    if body.presentation is not None:
+        pres = body.presentation.strip().lower()
+        shot.presentation = pres if pres else None
+
+    db.commit()
+    db.refresh(shot)
+
+    video = db.query(models.Video).filter(models.Video.id == shot.video_id).first()
+    if not video:
+        return Response(status_code=404)
+    meas = db.query(models.ShotMeasurement).filter(models.ShotMeasurement.shot_id == shot.id).first()
+    return serialize_session_shot(shot=shot, measurement=meas, video=video)
 
 import os
 import cv2
@@ -127,10 +166,6 @@ def get_session(session_id: int, db: Session = Depends(database.get_db)):
         "type": rounds[0].type if rounds else "Unknown",
         "metadata": s.metadata_json
     }
-
-from pydantic import BaseModel
-
-from typing import Optional
 
 class SessionUpdate(BaseModel):
     venue: Optional[str] = None
@@ -338,21 +373,29 @@ def serve_video(path: str):
     return Response(status_code=404)
 
 @app.get("/api/videos/frame")
-def serve_video_frame(path: str, time_ms: int = 1000):
+def serve_video_frame(path: str, time_ms: int = 1000, frame_idx: int = -1):
     if not os.path.exists(path):
         return Response(status_code=404)
-    # Get frame at specified time_ms
+
     cap = cv2.VideoCapture(path)
-    cap.set(cv2.CAP_PROP_POS_MSEC, time_ms)
-    ret, frame = cap.read()
-    if not ret:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+    if frame_idx >= 0:
+        for i in range(frame_idx + 1):
+            ret, frame = cap.read()
+            if not ret:
+                break
+    else:
+        cap.set(cv2.CAP_PROP_POS_MSEC, time_ms)
         ret, frame = cap.read()
+        if not ret:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ret, frame = cap.read()
+
     cap.release()
-    
+
     if ret:
-        ret, buffer = cv2.imencode('.jpg', frame)
-        if ret:
+        ok, buffer = cv2.imencode('.jpg', frame)
+        if ok:
             return Response(content=buffer.tobytes(), media_type="image/jpeg")
-            
+
     return Response(status_code=404)

@@ -20,7 +20,7 @@ from cv_pipeline.processor import detect_gunshot_onset, extract_audio_track
 logger = logging.getLogger(__name__)
 
 DEFAULT_FPS = float(os.getenv("SHOTKAM_DEFAULT_FPS", "60"))
-DEFAULT_FRAME_STRIDE = max(1, int(os.getenv("ROBOFLOW_FRAME_STRIDE", "1")))
+DEFAULT_FRAME_STRIDE = max(1, int(os.getenv("ROBOFLOW_FRAME_STRIDE", "5")))
 CLAY_THRESHOLD = float(os.getenv("CLAY_CONFIDENCE_THRESHOLD", "0.45"))
 BROKEN_THRESHOLD = float(os.getenv("BROKEN_CLAY_CONFIDENCE_THRESHOLD", "0.60"))
 BREAK_DECISION_THRESHOLD = float(os.getenv("BREAK_DECISION_THRESHOLD", "0.70"))

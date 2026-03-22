@@ -72,7 +72,7 @@ def main() -> int:
 
         print(f"[{idx}/{total}] Processing {filename} (video_id={video.id})")
         try:
-            analysis = analyze_video_file(filepath, frame_stride=15)
+            analysis = analyze_video_file(filepath, frame_stride=5)
 
             new_shot = models.Shot(
                 video_id=video.id,

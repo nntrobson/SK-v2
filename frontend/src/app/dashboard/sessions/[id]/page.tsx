@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ScatterChart,
   Scatter,
@@ -14,9 +14,17 @@ import {
   ReferenceArea,
   ReferenceLine,
 } from "recharts";
-import { ArrowLeft, Target, Activity, Video, Crosshair, Sparkles } from "lucide-react";
+import { ArrowLeft, Target, Activity, Video, Crosshair, Sparkles, SlidersHorizontal, X } from "lucide-react";
 import Link from "next/link";
+import Image from "next/image";
 import { motion, type Variants } from "framer-motion";
+import {
+  describeHorizontalOffset,
+  describeVerticalOffset,
+  getHorizontalMeaningForPresentation,
+  getShotPatternSummary,
+  type AveragePosition,
+} from "./shot-placement-insights";
 
 interface OverlayBbox {
   x: number;
@@ -74,9 +82,11 @@ interface ShotData {
   tracking_data?: TrackingFrame[];
 }
 
-interface AveragePosition {
-  x: number;
-  y: number;
+interface SessionInfo {
+  id: number;
+  venue: string | null;
+  date: string | null;
+  type: string | null;
 }
 
 const OUTCOME_STYLES: Record<ShotData["type"], { color: string; label: string; badge: string }> = {
@@ -139,6 +149,52 @@ function formatStationLabel(station: string | null | undefined): string {
   if (!station) return "Unknown";
   if (station === "trap-house") return "Trap House 3";
   return formatClassLabel(station);
+}
+
+function formatPresentationFilterLabel(filter: string): string {
+  if (filter === "all") return "All targets";
+  if (filter === "straight") return "Straightaway";
+  return filter.replace(/_/g, " ");
+}
+
+const PRESENTATION_OPTIONS = [
+  { value: "straight", label: "Straightaway" },
+  { value: "hard_left", label: "Hard left" },
+  { value: "hard_right", label: "Hard right" },
+  { value: "moderate_left", label: "Moderate left" },
+  { value: "moderate_right", label: "Moderate right" },
+] as const;
+
+const STATION_OPTIONS = [
+  { value: "trap-house-1-2", label: "Posts 1–2" },
+  { value: "trap-house", label: "Post 3 (house)" },
+  { value: "trap-house-4-5", label: "Posts 4–5" },
+  { value: "unknown", label: "Unknown" },
+] as const;
+
+const KNOWN_TRAP_STATIONS = new Set(["trap-house-1-2", "trap-house", "trap-house-4-5"]);
+
+function stationOptionIsActive(station: string | null | undefined, optionValue: string): boolean {
+  const s = (station ?? "").trim().toLowerCase();
+  if (optionValue === "unknown") {
+    return !s || s === "unknown" || !KNOWN_TRAP_STATIONS.has(s);
+  }
+  return s === optionValue;
+}
+
+function getSymmetricAxisDomain(
+  shots: ShotData[],
+  axis: "x" | "y",
+  minimumExtent: number,
+  padding: number,
+): [number, number] {
+  if (shots.length === 0) {
+    return [-minimumExtent, minimumExtent];
+  }
+
+  const maxAbsValue = shots.reduce((maxValue, shot) => Math.max(maxValue, Math.abs(shot[axis])), 0);
+  const extent = Math.max(minimumExtent, Math.ceil((maxAbsValue + padding) * 2) / 2);
+  return [-extent, extent];
 }
 
 function getPhotoFrame(shot: ShotData | null): TrackingFrame | null {
@@ -236,7 +292,7 @@ const TrajectoryDot = (props: TrajectoryShapeProps) => {
   const { cx, cy, fill, payload, xAxis, yAxis, onClickShot, isSelected, anySelected } = props;
   
   const dots = [];
-  if (payload.trajectory && payload.trajectory.length > 0 && xAxis && yAxis) {
+  if (isSelected && payload.trajectory && payload.trajectory.length > 0 && xAxis && yAxis) {
     const scaleX = xAxis.scale;
     const scaleY = yAxis.scale;
     const denominator = Math.max(payload.trajectory.length - 1, 1);
@@ -247,8 +303,8 @@ const TrajectoryDot = (props: TrajectoryShapeProps) => {
       const py = scaleY(pt.y);
       
       const t = i / denominator;
-      const radius = Math.max(0.5, 4.5 * t);
-      const opacity = 0.8 * Math.pow(t, 1.5);
+      const radius = Math.max(1.25, 3.25 * t);
+      const opacity = 0.35 * Math.pow(t, 1.3);
       
       dots.push(<circle key={`tail-${i}`} cx={px} cy={py} r={radius} fill={fill} fillOpacity={opacity} style={{ pointerEvents: 'none' }} />);
     }
@@ -259,9 +315,10 @@ const TrajectoryDot = (props: TrajectoryShapeProps) => {
   return (
     <g onClick={() => onClickShot && onClickShot(payload)} className="cursor-pointer" style={{ opacity, transition: 'opacity 0.3s' }}>
       {dots}
-      <circle cx={cx} cy={cy} r={6} fill={fill} stroke="#ffffff" strokeWidth={1.5} />
+      <circle cx={cx} cy={cy} r={11} fill={fill} fillOpacity={0.14} />
+      <circle cx={cx} cy={cy} r={6.5} fill={fill} stroke="#ffffff" strokeWidth={1.5} />
+      <circle cx={cx} cy={cy} r={2.3} fill="#f8fafc" />
       {isSelected && <circle cx={cx} cy={cy} r={20} fill="none" stroke="#ffffff" strokeWidth={2} className="animate-ping" />}
-      <circle cx={cx} cy={cy} r={16} fill={fill} fillOpacity={0.2} className="animate-pulse" />
     </g>
   );
 };
@@ -270,7 +327,7 @@ const TrajectoryMiss = (props: TrajectoryShapeProps) => {
   const { cx, cy, fill, payload, xAxis, yAxis, onClickShot, isSelected, anySelected } = props;
   
   const dots = [];
-  if (payload.trajectory && payload.trajectory.length > 0 && xAxis && yAxis) {
+  if (isSelected && payload.trajectory && payload.trajectory.length > 0 && xAxis && yAxis) {
     const scaleX = xAxis.scale;
     const scaleY = yAxis.scale;
     const denominator = Math.max(payload.trajectory.length - 1, 1);
@@ -281,8 +338,8 @@ const TrajectoryMiss = (props: TrajectoryShapeProps) => {
         const py = scaleY(pt.y);
         
         const t = i / denominator;
-        const radius = Math.max(0.5, 4.5 * t);
-        const opacity = 0.5 * Math.pow(t, 1.5);
+        const radius = Math.max(1.25, 3.25 * t);
+        const opacity = 0.25 * Math.pow(t, 1.2);
         
         dots.push(<circle key={`miss-tail-${i}`} cx={px} cy={py} r={radius} fill="#94a3b8" fillOpacity={opacity} style={{ pointerEvents: 'none' }} />);
     }
@@ -293,11 +350,10 @@ const TrajectoryMiss = (props: TrajectoryShapeProps) => {
   return (
     <g onClick={() => onClickShot && onClickShot(payload)} className="cursor-pointer" style={{ opacity, transition: 'opacity 0.3s' }}>
       {dots}
-      {/* 'X' shape for miss */}
-      <line x1={cx-5} y1={cy-5} x2={cx+5} y2={cy+5} stroke={fill} strokeWidth={2.5} strokeLinecap="round" />
-      <line x1={cx+5} y1={cy-5} x2={cx-5} y2={cy+5} stroke={fill} strokeWidth={2.5} strokeLinecap="round" />
+      <circle cx={cx} cy={cy} r={11} fill={fill} fillOpacity={0.1} stroke={fill} strokeOpacity={0.3} />
+      <line x1={cx-5.25} y1={cy-5.25} x2={cx+5.25} y2={cy+5.25} stroke={fill} strokeWidth={2.75} strokeLinecap="round" />
+      <line x1={cx+5.25} y1={cy-5.25} x2={cx-5.25} y2={cy+5.25} stroke={fill} strokeWidth={2.75} strokeLinecap="round" />
       {isSelected && <circle cx={cx} cy={cy} r={20} fill="none" stroke="#ffffff" strokeWidth={2} className="animate-ping" />}
-      <circle cx={cx} cy={cy} r={16} fill={fill} fillOpacity={0.1} />
     </g>
   );
 };
@@ -306,7 +362,7 @@ const TrajectoryUnknown = (props: TrajectoryShapeProps) => {
   const { cx, cy, fill, payload, xAxis, yAxis, onClickShot, isSelected, anySelected } = props;
 
   const dots = [];
-  if (payload.trajectory && payload.trajectory.length > 0 && xAxis && yAxis) {
+  if (isSelected && payload.trajectory && payload.trajectory.length > 0 && xAxis && yAxis) {
     const scaleX = xAxis.scale;
     const scaleY = yAxis.scale;
     const denominator = Math.max(payload.trajectory.length - 1, 1);
@@ -317,8 +373,8 @@ const TrajectoryUnknown = (props: TrajectoryShapeProps) => {
       const py = scaleY(pt.y);
 
       const t = i / denominator;
-      const radius = Math.max(0.5, 4 * t);
-      const opacity = 0.45 * Math.pow(t, 1.25);
+      const radius = Math.max(1.25, 3 * t);
+      const opacity = 0.2 * Math.pow(t, 1.15);
 
       dots.push(<circle key={`unknown-tail-${i}`} cx={px} cy={py} r={radius} fill={fill} fillOpacity={opacity} style={{ pointerEvents: "none" }} />);
     }
@@ -329,9 +385,52 @@ const TrajectoryUnknown = (props: TrajectoryShapeProps) => {
   return (
     <g onClick={() => onClickShot && onClickShot(payload)} className="cursor-pointer" style={{ opacity, transition: "opacity 0.3s" }}>
       {dots}
-      <rect x={cx - 5} y={cy - 5} width={10} height={10} fill={fill} stroke="#ffffff" strokeWidth={1.5} rx={2} />
+      <rect x={cx - 6} y={cy - 6} width={12} height={12} fill={fill} fillOpacity={0.2} stroke="#ffffff" strokeWidth={1.5} rx={2} transform={`rotate(45 ${cx} ${cy})`} />
+      <circle cx={cx} cy={cy} r={2.25} fill="#f8fafc" />
       {isSelected && <circle cx={cx} cy={cy} r={20} fill="none" stroke="#ffffff" strokeWidth={2} className="animate-ping" />}
     </g>
+  );
+};
+
+const ShotPlacementTooltip = ({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: ShotData }>;
+}) => {
+  if (!active || !payload?.length) {
+    return null;
+  }
+
+  const shot = payload[0].payload;
+  const outcome = OUTCOME_STYLES[shot.type];
+
+  return (
+    <div className="min-w-[220px] rounded-2xl border border-slate-700/80 bg-slate-950/95 p-4 shadow-[0_20px_45px_rgba(2,6,23,0.75)] backdrop-blur">
+      <div className="flex items-center justify-between gap-3">
+        <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.18em] ${outcome.badge}`}>
+          {outcome.label}
+        </span>
+        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+          {formatPresentationFilterLabel(shot.presentation)}
+        </span>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+        <div className="rounded-xl border border-white/5 bg-white/5 px-3 py-2">
+          <div className="uppercase tracking-[0.16em] text-slate-500">Horizontal</div>
+          <div className="mt-1 text-sm font-semibold text-white">{describeHorizontalOffset(shot.x)}</div>
+        </div>
+        <div className="rounded-xl border border-white/5 bg-white/5 px-3 py-2">
+          <div className="uppercase tracking-[0.16em] text-slate-500">Vertical</div>
+          <div className="mt-1 text-sm font-semibold text-white">{describeVerticalOffset(shot.y)}</div>
+        </div>
+      </div>
+      <div className="mt-3 text-[11px] leading-relaxed text-slate-400">
+        Target position relative to bead at the shot.
+        {shot.station ? ` Station: ${formatStationLabel(shot.station)}.` : ""}
+      </div>
+    </div>
   );
 };
 
@@ -656,15 +755,15 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
   const [filter, setFilter] = useState("all");
   const [stationFilter, setStationFilter] = useState("all");
   const [shotData, setShotData] = useState<ShotData[]>([]);
-  const [sessionInfo, setSessionInfo] = useState<any>(null);
+  const [sessionInfo, setSessionInfo] = useState<SessionInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedShot, setSelectedShot] = useState<ShotData | null>(null);
   const [replayMode, setReplayMode] = useState<"photo" | "video">("photo");
   const [activeOverlayFrame, setActiveOverlayFrame] = useState<TrackingFrame | null>(null);
+  const [interpolatedBoxes, setInterpolatedBoxes] = useState<OverlayBox[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
   const requestRef = useRef<number | null>(null);
   const lastVideoTimeRef = useRef<number>(-1);
-  const videoOverlayContainerRef = useRef<HTMLDivElement>(null);
   
   // Categorization states
   const [isEditingSession, setIsEditingSession] = useState(false);
@@ -673,9 +772,39 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
   const [isCategorizeModalOpen, setIsCategorizeModalOpen] = useState(false);
   const [categorizeShotId, setCategorizeShotId] = useState<number | null>(null);
   const [newCategorizeName, setNewCategorizeName] = useState("");
-  const [allSessions, setAllSessions] = useState<any[]>([]);
-  
+  const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
+  const [classificationSavingId, setClassificationSavingId] = useState<number | null>(null);
+
   const unwrappedParams = React.use(params);
+
+  const applyShotUpdateFromApi = (shotId: number, updated: ShotData) => {
+    setShotData((prev) => prev.map((s) => (s.id === shotId ? { ...s, ...updated } : s)));
+    setSelectedShot((prev) => (prev?.id === shotId ? { ...prev, ...updated } : prev));
+  };
+
+  const patchShotClassification = async (
+    shotId: number,
+    patch: { break_label?: string; station?: string; presentation?: string },
+  ) => {
+    setClassificationSavingId(shotId);
+    try {
+      const res = await fetch(`http://localhost:8000/api/shots/${shotId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) {
+        console.error("Shot classification update failed", res.status);
+        return;
+      }
+      const updated = (await res.json()) as ShotData;
+      applyShotUpdateFromApi(shotId, updated);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setClassificationSavingId(null);
+    }
+  };
 
   useEffect(() => {
     Promise.all([
@@ -683,12 +812,14 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
       fetch(`http://localhost:8000/api/sessions/${unwrappedParams.id}`).then(res => res.json())
     ])
       .then(([shots, info]) => {
-        setShotData(shots);
-        setSessionInfo(info);
+        const sessionShots = shots as ShotData[];
+        const session = info as SessionInfo;
+        setShotData(sessionShots);
+        setSessionInfo(session);
         setEditForm({ 
-          venue: info.venue || "", 
-          date: info.date || "", 
-          type: info.type || "" 
+          venue: session.venue || "", 
+          date: session.date || "", 
+          type: session.type || "" 
         });
         setLoading(false);
       })
@@ -706,7 +837,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
         body: JSON.stringify(editForm)
       });
       if (res.ok) {
-        setSessionInfo({ ...sessionInfo, ...editForm });
+        setSessionInfo((current) => (current ? { ...current, ...editForm } : current));
       }
     } catch (e) {
       console.error(e);
@@ -721,8 +852,8 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
     try {
       const res = await fetch("http://localhost:8000/api/sessions");
       if (res.ok) {
-        const data = await res.json();
-        setAllSessions(data.filter((s: any) => s.id !== parseInt(unwrappedParams.id)));
+        const data = await res.json() as SessionInfo[];
+        setAllSessions(data.filter((session) => session.id !== parseInt(unwrappedParams.id, 10)));
       }
     } catch (e) {
       console.error(e);
@@ -759,12 +890,41 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
     }
   };
 
+  const deselectShot = useCallback(() => {
+    setSelectedShot(null);
+    setReplayMode("photo");
+    setActiveOverlayFrame(null);
+    setInterpolatedBoxes([]);
+    lastVideoTimeRef.current = -1;
+  }, []);
+
   const handleSelectShot = (shot: ShotData) => {
+    if (selectedShot?.id === shot.id) {
+      deselectShot();
+      return;
+    }
     setSelectedShot(shot);
     setReplayMode("photo");
     setActiveOverlayFrame(getPhotoFrame(shot));
+    setInterpolatedBoxes([]);
     lastVideoTimeRef.current = -1;
   };
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (isCategorizeModalOpen) {
+        setIsCategorizeModalOpen(false);
+        setCategorizeShotId(null);
+        return;
+      }
+      if (selectedShot) {
+        deselectShot();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedShot, isCategorizeModalOpen, deselectShot]);
 
   useEffect(() => {
     if (replayMode !== "video" || !selectedShot?.tracking_data?.length) {
@@ -772,97 +932,23 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
       return;
     }
 
-    const overlayClassColors: Record<string, string> = {
-      "clay-targets": "#34d399",
-      "broken-clay": "#fbbf24",
-      "trap-house": "#38bdf8",
-      "trap-house-1-2": "#60a5fa",
-      "trap-house-4-5": "#a78bfa",
-    };
-
     const animate = () => {
       const video = videoRef.current;
-      const container = videoOverlayContainerRef.current;
-      if (!video || !container) {
-        requestRef.current = requestAnimationFrame(animate);
-        return;
-      }
-
-      const vTime = video.currentTime;
-      if (Math.abs(vTime - lastVideoTimeRef.current) < 0.005) {
-        requestRef.current = requestAnimationFrame(animate);
-        return;
-      }
-      lastVideoTimeRef.current = vTime;
-
-      const result = getInterpolatedOverlayForTime(selectedShot.tracking_data, vTime);
-      const boxes = result.boxes;
-      const cxHalf = selectedShot.tracking_data?.[0]?.crosshair_x;
-      const cyHalf = selectedShot.tracking_data?.[0]?.crosshair_y;
-      const fullW = cxHalf ? cxHalf * 2 : 1;
-      const fullH = cyHalf ? cyHalf * 2 : 1;
-
-      while (container.children.length > boxes.length) {
-        container.removeChild(container.lastChild!);
-      }
-      while (container.children.length < boxes.length) {
-        const wrapper = document.createElement("div");
-        wrapper.style.position = "absolute";
-        wrapper.style.pointerEvents = "none";
-        wrapper.style.zIndex = "20";
-        const inner = document.createElement("div");
-        inner.style.width = "100%";
-        inner.style.height = "100%";
-        inner.style.borderWidth = "1.5px";
-        inner.style.borderStyle = "solid";
-        inner.style.borderRadius = "2px";
-        inner.style.position = "relative";
-        const label = document.createElement("span");
-        label.style.position = "absolute";
-        label.style.top = "-18px";
-        label.style.left = "0";
-        label.style.whiteSpace = "nowrap";
-        label.style.fontSize = "9px";
-        label.style.fontFamily = "monospace";
-        label.style.fontWeight = "600";
-        label.style.background = "rgba(2,6,23,0.8)";
-        label.style.padding = "1px 4px";
-        label.style.borderRadius = "2px";
-        inner.appendChild(label);
-        wrapper.appendChild(inner);
-        container.appendChild(wrapper);
-      }
-
-      for (let i = 0; i < boxes.length; i++) {
-        const box = boxes[i];
-        const bbox = normalizeBbox(box);
-        const el = container.children[i] as HTMLDivElement;
-        if (!bbox) {
-          el.style.display = "none";
-          continue;
+      if (video) {
+        const vTime = video.currentTime;
+        if (Math.abs(vTime - lastVideoTimeRef.current) > 0.005) {
+          lastVideoTimeRef.current = vTime;
+          const result = getInterpolatedOverlayForTime(selectedShot.tracking_data, vTime);
+          setActiveOverlayFrame(result.frame);
+          setInterpolatedBoxes(result.boxes);
         }
-        const color = overlayClassColors[(box.class_name ?? "").toLowerCase()] ?? "#ffffff";
-        el.style.display = "block";
-        el.style.left = `${(bbox.x / fullW) * 100}%`;
-        el.style.top = `${(bbox.y / fullH) * 100}%`;
-        el.style.width = `${(bbox.width / fullW) * 100}%`;
-        el.style.height = `${(bbox.height / fullH) * 100}%`;
-        const inner = el.firstChild as HTMLDivElement;
-        inner.style.borderColor = color;
-        const label = inner.firstChild as HTMLSpanElement;
-        label.style.color = color;
-        label.textContent = `${(box.class_name ?? "").replace(/-/g, " ")} ${(box.confidence ?? 0).toFixed(2)}`;
       }
-
       requestRef.current = requestAnimationFrame(animate);
     };
 
     requestRef.current = requestAnimationFrame(animate);
     return () => {
       if (requestRef.current !== null) cancelAnimationFrame(requestRef.current);
-      if (videoOverlayContainerRef.current) {
-        videoOverlayContainerRef.current.innerHTML = "";
-      }
     };
   }, [replayMode, selectedShot]);
 
@@ -876,13 +962,29 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
 
   const averageVisiblePosition = getAveragePosition(filteredData);
   const averageHitPosition = getAveragePosition(hits);
+  const averageMissPosition = getAveragePosition(misses);
+  const chartXDomain = useMemo(() => getSymmetricAxisDomain(filteredData, "x", 10, 1.5), [filteredData]);
+  const chartYDomain = useMemo(() => getSymmetricAxisDomain(filteredData, "y", 6, 1), [filteredData]);
+  const breakWindowHalfWidth = Math.max(1.5, chartXDomain[1] * 0.16);
+  const breakWindowHalfHeight = Math.max(1, chartYDomain[1] * 0.18);
+  const shotPatternSummary = useMemo(() => getShotPatternSummary({
+    filter,
+    hitsCount: hits.length,
+    missesCount: misses.length,
+    averageHitPosition,
+    averageMissPosition,
+    averageVisiblePosition,
+  }), [averageHitPosition, averageMissPosition, averageVisiblePosition, filter, hits.length, misses.length]);
+  const summaryPosition = averageHitPosition ?? averageVisiblePosition;
+  const summaryPositionLabel = averageHitPosition ? "Break window offset" : "Visible pattern offset";
+  const positiveSideRead = filter !== "all" ? getHorizontalMeaningForPresentation(filter, 1) : null;
   const photoFrame = selectedShot ? getPhotoFrame(selectedShot) : null;
   const activeFrame = replayMode === "video" ? activeOverlayFrame : photoFrame;
-  const overlayBoxes = replayMode === "photo"
-    ? (selectedShot?.pretrigger_boxes?.length
-        ? selectedShot.pretrigger_boxes
-        : photoFrame?.overlay_boxes ?? [])
-    : [];
+  const overlayBoxes = replayMode === "video"
+    ? interpolatedBoxes.length ? interpolatedBoxes : (activeFrame?.overlay_boxes ?? [])
+    : selectedShot?.pretrigger_boxes?.length
+      ? selectedShot.pretrigger_boxes
+      : photoFrame?.overlay_boxes ?? [];
   const baseCrosshairX = activeFrame?.crosshair_x ?? selectedShot?.crosshair_x ?? selectedShot?.tracking_data?.[0]?.crosshair_x;
   const baseCrosshairY = activeFrame?.crosshair_y ?? selectedShot?.crosshair_y ?? selectedShot?.tracking_data?.[0]?.crosshair_y;
   const overlayAspectRatio = selectedShot?.tracking_data?.length
@@ -971,7 +1073,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
             )}
           </div>
         </div>
-        <div className="flex items-center justify-end gap-6 mt-4 md:mt-0 flex-1">
+        <div className="flex flex-wrap items-end justify-end gap-4 md:gap-6 mt-4 md:mt-0 flex-1">
           <TrapHouseSelector 
             selected={stationFilter} 
             highlighted={selectedShot?.station}
@@ -982,6 +1084,20 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
             highlighted={selectedShot?.presentation}
             onSelect={setFilter} 
           />
+          {selectedShot && (
+            <button
+              type="button"
+              onClick={deselectShot}
+              title="Clear selected shot (path highlight, station ring, replay panel). Press Esc."
+              className="flex items-center gap-2 self-end rounded-full border border-white/15 bg-slate-900/70 px-3 py-2 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-200 shadow-sm transition hover:border-cyan-500/40 hover:bg-slate-800/90 hover:text-white"
+            >
+              <X className="h-3.5 w-3.5 text-cyan-400" aria-hidden />
+              <span>Clear selection</span>
+              <kbd className="hidden sm:inline rounded border border-white/10 bg-slate-950/80 px-1.5 py-0.5 font-mono text-[9px] font-semibold normal-case tracking-normal text-slate-500">
+                Esc
+              </kbd>
+            </button>
+          )}
         </div>
       </motion.div>
 
@@ -1028,13 +1144,23 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
               </div>
 
               <div className="pt-6 border-t border-slate-700/50">
-                <div className="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-2">Break Centroid Offset</div>
-                {averageHitPosition ? (
-                  <div className="text-xl font-bold text-white tracking-tight">
-                    <span className={averageHitPosition.x > 0 ? "text-amber-400" : "text-sky-400"}>{Math.abs(averageHitPosition.x).toFixed(1)}&quot; {averageHitPosition.x > 0 ? 'Right' : 'Left'}</span>
-                    <span className="text-slate-600 mx-2">×</span>
-                    <span className="text-emerald-400">{averageHitPosition.y.toFixed(1)}&quot; High</span>
-                  </div>
+                <div className="text-xs text-slate-500 font-semibold uppercase tracking-wider mb-3">{summaryPositionLabel}</div>
+                {summaryPosition ? (
+                  <>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-xl border border-sky-500/15 bg-sky-500/10 px-3 py-3">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Horizontal</div>
+                        <div className="mt-1 text-sm font-bold text-white">{describeHorizontalOffset(summaryPosition.x)}</div>
+                      </div>
+                      <div className="rounded-xl border border-emerald-500/15 bg-emerald-500/10 px-3 py-3">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Vertical</div>
+                        <div className="mt-1 text-sm font-bold text-white">{describeVerticalOffset(summaryPosition.y)}</div>
+                      </div>
+                    </div>
+                    <p className="mt-3 text-xs leading-relaxed text-slate-400">
+                      Read these as target position relative to your bead at the shot.
+                    </p>
+                  </>
                 ) : (
                   <div className="text-sm font-medium text-slate-400">No successful breaks in the current filter.</div>
                 )}
@@ -1074,49 +1200,109 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
           <div className="glass-panel rounded-2xl p-6 h-full flex flex-col min-h-[600px] relative overflow-hidden">
             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-blue-500 to-transparent opacity-20" />
             
-            <div className="flex justify-between items-center mb-8">
-              <h2 className="text-xl font-bold flex items-center gap-3 text-white">
-                <Target className="w-5 h-5 text-sky-400" /> Shot Placement Matrix
-              </h2>
-              <div className="flex gap-4 text-xs font-bold uppercase tracking-wider">
-                <div className="flex items-center gap-2 text-slate-300">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" /> Break
-                </div>
-                <div className="flex items-center gap-2 text-slate-300">
-                  <span className="w-2.5 h-2.5 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)]" /> Miss
-                </div>
-                <div className="flex items-center gap-2 text-slate-300">
-                  <span className="h-2.5 w-2.5 rounded-sm bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.8)]" /> Unknown
-                </div>
-                <div className="flex items-center gap-2 text-slate-300">
-                  <span className="relative block h-3 w-3">
-                    <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.6)]" />
-                    <span className="absolute left-0 top-1/2 h-px w-full -translate-y-1/2 bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.6)]" />
+            <div className="mb-6 flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+              <div>
+                <h2 className="text-xl font-bold flex items-center gap-3 text-white">
+                  <Target className="w-5 h-5 text-sky-400" /> Shot Placement Matrix
+                </h2>
+                <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">
+                  Each mark shows where the target sat relative to your bead at the shot. Green shows the break window, red shows where misses leak, and the dashed guide tracks the average of what is currently visible.
+                  {selectedShot ? (
+                    <span className="mt-2 block text-xs text-slate-500">
+                      Click the same point again, press <kbd className="rounded border border-white/10 bg-slate-900/80 px-1 py-0.5 font-mono text-[10px] text-slate-400">Esc</kbd>
+                      , or use <span className="text-slate-400">Clear selection</span> above to drop the path, station highlight, and replay panel.
+                    </span>
+                  ) : null}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-3 text-[11px] font-bold uppercase tracking-[0.18em]">
+                <div className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-3 py-2 text-slate-300">
+                  <span className="relative block h-3.5 w-3.5">
+                    <span className="absolute inset-0 rounded-full bg-emerald-400/20" />
+                    <span className="absolute left-1/2 top-1/2 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white bg-emerald-400" />
                   </span>
-                  Avg Visible
+                  Break
+                </div>
+                <div className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-3 py-2 text-slate-300">
+                  <span className="relative block h-3.5 w-3.5 rounded-full bg-rose-500/10">
+                    <span className="absolute left-1/2 top-1/2 h-[2px] w-3.5 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-rose-400" />
+                    <span className="absolute left-1/2 top-1/2 h-[2px] w-3.5 -translate-x-1/2 -translate-y-1/2 -rotate-45 rounded-full bg-rose-400" />
+                  </span>
+                  Miss
+                </div>
+                <div className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-3 py-2 text-slate-300">
+                  <span className="h-3 w-3 rotate-45 rounded-[2px] border border-white bg-amber-400/50" />
+                  Unknown
+                </div>
+                <div className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-3 py-2 text-slate-300">
+                  <span className="relative block h-3.5 w-3.5">
+                    <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-amber-400" />
+                    <span className="absolute left-0 top-1/2 h-px w-full -translate-y-1/2 bg-cyan-400" />
+                  </span>
+                  Visible Avg
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-5 grid gap-3 md:grid-cols-3">
+              <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-4">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-emerald-200/70">Break Window</div>
+                <div className="mt-2 text-sm font-semibold leading-relaxed text-white">{shotPatternSummary.headline}</div>
+              </div>
+              <div className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-4">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-rose-200/70">Pattern Drift</div>
+                <div className="mt-2 text-sm font-semibold leading-relaxed text-white">{shotPatternSummary.detail}</div>
+              </div>
+              <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 px-4 py-4">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-sky-200/70">How To Read This Angle</div>
+                <div className="mt-2 text-sm font-semibold leading-relaxed text-white">
+                  {filter === "all"
+                    ? "Right of center means the target stayed right of your bead. Above center means the gun finished low."
+                    : `For ${formatPresentationFilterLabel(filter).toLowerCase()} birds, right of center usually reads ${positiveSideRead?.toLowerCase()}.`}
                 </div>
               </div>
             </div>
             
             {/* The Chart Background */}
-            <div className="flex-1 min-h-[400px] w-full bg-[#0a0f1c] rounded-xl p-4 border border-slate-800/80 shadow-[inset_0_0_40px_rgba(0,0,0,0.5)] relative group cursor-crosshair">
+            <div className="flex-1 min-h-[420px] w-full rounded-[24px] border border-slate-800/80 bg-[#08111f] p-5 shadow-[inset_0_0_60px_rgba(2,6,23,0.85)] relative overflow-hidden group cursor-crosshair">
+              <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(14,165,233,0.08),transparent_42%),radial-gradient(circle_at_bottom_right,rgba(16,185,129,0.08),transparent_34%)]" />
+              <div className="pointer-events-none absolute inset-x-6 top-1/2 h-px -translate-y-1/2 bg-cyan-400/15" />
+              <div className="pointer-events-none absolute inset-y-6 left-1/2 w-px -translate-x-1/2 bg-cyan-400/15" />
               {/* Axis Labels */}
-              <p className="absolute text-[10px] font-mono text-slate-500 top-2 left-1/2 -translate-x-1/2 uppercase tracking-widest">+ Vertical Offset (in)</p>
-              <p className="absolute text-[10px] font-mono text-slate-500 bottom-2 left-1/2 -translate-x-1/2 uppercase tracking-widest">- Vertical Offset (in)</p>
-              <p className="absolute text-[10px] font-mono text-slate-500 top-1/2 left-2 -translate-y-1/2 -rotate-90 uppercase tracking-widest">- Horiz (in)</p>
-              <p className="absolute text-[10px] font-mono text-slate-500 top-1/2 right-2 translate-y-1/2 rotate-90 uppercase tracking-widest">+ Horiz (in)</p>
+              <p className="absolute left-1/2 top-3 -translate-x-1/2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Target Above Bead</p>
+              <p className="absolute bottom-3 left-1/2 -translate-x-1/2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Target Below Bead</p>
+              <p className="absolute left-3 top-1/2 -translate-y-1/2 -rotate-90 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Target Left Of Bead</p>
+              <p className="absolute right-3 top-1/2 translate-y-1/2 rotate-90 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Target Right Of Bead</p>
               
-              <ResponsiveContainer width="100%" height={400}>
-                <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
-                  <CartesianGrid strokeDasharray="2 4" stroke="#1e293b" opacity={0.6} horizontal={true} vertical={true} />
-                  <XAxis type="number" dataKey="x" domain={[-10, 10]} stroke="#334155" tick={{fill: '#64748b', fontSize: 12}} axisLine={{stroke: '#334155'}} />
-                  <YAxis type="number" dataKey="y" domain={[-6, 6]} stroke="#334155" tick={{fill: '#64748b', fontSize: 12}} axisLine={{stroke: '#334155'}} />
+              <ResponsiveContainer width="100%" height={420}>
+                <ScatterChart margin={{ top: 28, right: 26, bottom: 28, left: 26 }}>
+                  <CartesianGrid strokeDasharray="3 5" stroke="#1e293b" opacity={0.45} horizontal={true} vertical={true} />
+                  <XAxis
+                    type="number"
+                    dataKey="x"
+                    domain={chartXDomain}
+                    stroke="#334155"
+                    tick={{ fill: "#94a3b8", fontSize: 12 }}
+                    axisLine={{ stroke: "#334155" }}
+                    tickLine={{ stroke: "#334155" }}
+                  />
+                  <YAxis
+                    type="number"
+                    dataKey="y"
+                    domain={chartYDomain}
+                    stroke="#334155"
+                    tick={{ fill: "#94a3b8", fontSize: 12 }}
+                    axisLine={{ stroke: "#334155" }}
+                    tickLine={{ stroke: "#334155" }}
+                  />
                   <ZAxis type="number" range={[150, 150]} />
-                  <RechartsTooltip cursor={{strokeDasharray: '3 3', stroke: '#3b82f6'}} contentStyle={{"backgroundColor": "#0f172a", "borderColor": "#1e293b", "color": "white", "borderRadius": "12px", "boxShadow": "0 10px 25px rgba(0,0,0,0.5)"}} itemStyle={{"color": "#38bdf8"}} />
+                  <RechartsTooltip cursor={{ strokeDasharray: "4 4", stroke: "#60a5fa", strokeOpacity: 0.45 }} content={<ShotPlacementTooltip />} />
+                  <ReferenceLine x={0} stroke="#38bdf8" strokeOpacity={0.22} />
+                  <ReferenceLine y={0} stroke="#38bdf8" strokeOpacity={0.22} />
                   
                   {/* Crosshair Center */}
-                  <ReferenceDot x={0} y={0} r={6} fill="#f43f5e" stroke="#fff" strokeWidth={2} label={{ position: 'top', value: 'ShotKam Center', fill: '#f43f5e', fontSize: 11, fontWeight: 700 }} />
-                  <ReferenceDot x={0} y={0} r={12} fill="none" stroke="#f43f5e" strokeWidth={1} strokeOpacity={0.5} />
+                  <ReferenceDot x={0} y={0} r={5.5} fill="#e2e8f0" stroke="#38bdf8" strokeWidth={2} label={{ position: 'top', value: 'Bead Center', fill: '#cbd5e1', fontSize: 11, fontWeight: 700 }} />
+                  <ReferenceDot x={0} y={0} r={12} fill="none" stroke="#38bdf8" strokeWidth={1.25} strokeOpacity={0.4} />
 
                   {/* Average guides for all currently visible shots */}
                   {averageVisiblePosition && (
@@ -1149,17 +1335,22 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                   {/* Break Zone Density Area */}
                   {averageHitPosition && (
                     <ReferenceArea 
-                      x1={averageHitPosition.x - 2.5} x2={averageHitPosition.x + 2.5} 
-                      y1={averageHitPosition.y - 1.5} y2={averageHitPosition.y + 1.5} 
-                      fill="url(#breakGradient)" stroke="rgba(56, 189, 248, 0.3)" strokeWidth={1} strokeDasharray="3 3"
+                      x1={averageHitPosition.x - breakWindowHalfWidth}
+                      x2={averageHitPosition.x + breakWindowHalfWidth}
+                      y1={averageHitPosition.y - breakWindowHalfHeight}
+                      y2={averageHitPosition.y + breakWindowHalfHeight}
+                      fill="url(#breakGradient)"
+                      stroke="rgba(52, 211, 153, 0.35)"
+                      strokeWidth={1}
+                      strokeDasharray="4 4"
                     />
                   )}
                   
                   {/* SVG Definitions for Gradients */}
                   <defs>
                     <radialGradient id="breakGradient" cx="50%" cy="50%" r="50%">
-                      <stop offset="0%" stopColor="#38bdf8" stopOpacity={0.15} />
-                      <stop offset="100%" stopColor="#38bdf8" stopOpacity={0} />
+                      <stop offset="0%" stopColor="#34d399" stopOpacity={0.18} />
+                      <stop offset="100%" stopColor="#34d399" stopOpacity={0} />
                     </radialGradient>
                   </defs>
 
@@ -1186,6 +1377,22 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
               </ResponsiveContainer>
             </div>
             
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 1 }}
+              className="mt-6 p-5 glass-panel rounded-xl flex items-start gap-4 border-blue-500/20 bg-blue-900/10"
+            >
+              <div className="p-2 rounded-full bg-blue-500/20 text-blue-400 mt-0.5">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="font-semibold text-white mb-1">Shooter Readout</h4>
+                <p className="text-sm font-semibold leading-relaxed text-white">{shotPatternSummary.headline}</p>
+                <p className="mt-1 text-sm leading-relaxed text-slate-300">{shotPatternSummary.detail}</p>
+                <p className="mt-2 text-sm leading-relaxed text-blue-100/90">{shotPatternSummary.coaching}</p>
+              </div>
+            </motion.div>
             
             {/* Selected Shot Image Video Panel */}
             {selectedShot && (
@@ -1214,26 +1421,131 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                         Video
                       </button>
                     </div>
-                    <button onClick={() => setSelectedShot(null)} className="text-slate-400 hover:text-white text-xs font-semibold uppercase tracking-wider bg-slate-800/80 hover:bg-slate-700 transition px-3 py-1.5 rounded-full">
-                      Close
+                    <button
+                      type="button"
+                      onClick={deselectShot}
+                      className="text-slate-400 hover:text-white text-xs font-semibold uppercase tracking-wider bg-slate-800/80 hover:bg-slate-700 transition px-3 py-1.5 rounded-full"
+                    >
+                      Deselect
                     </button>
                   </div>
                 </div>
-                <div className="grid gap-3 text-xs uppercase tracking-wider text-slate-300 sm:grid-cols-3">
-                  <div className="rounded-xl border border-white/10 bg-slate-900/40 px-4 py-3">
-                    <div className="text-slate-500">Outcome</div>
-                    <div className="mt-1 font-semibold text-white">{OUTCOME_STYLES[selectedShot.type].label}</div>
+                <div className="rounded-2xl border border-cyan-500/20 bg-cyan-950/20 px-4 py-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex items-center gap-2 text-white">
+                      <SlidersHorizontal className="h-4 w-4 text-cyan-400" />
+                      <div>
+                        <div className="text-xs font-bold uppercase tracking-[0.16em] text-cyan-200/90">Correct this shot</div>
+                        <p className="mt-1 max-w-xl text-[11px] font-normal normal-case tracking-normal text-slate-400">
+                          If the model misread the break or station, fix it here. The chart, break window, and coaching text update immediately.
+                        </p>
+                      </div>
+                    </div>
+                    {classificationSavingId === selectedShot.id && (
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-cyan-300">Saving…</span>
+                    )}
                   </div>
-                  <div className="rounded-xl border border-white/10 bg-slate-900/40 px-4 py-3">
-                    <div className="text-slate-500">Location</div>
-                    <div className="mt-1 font-semibold text-white">{formatStationLabel(selectedShot.station)}</div>
-                  </div>
-                  <div className="rounded-xl border border-white/10 bg-slate-900/40 px-4 py-3">
-                    <div className="text-slate-500">Pre-trigger</div>
-                    <div className="mt-1 font-semibold text-white">
-                      {selectedShot.pretrigger_time !== null && selectedShot.pretrigger_time !== undefined
-                        ? `${selectedShot.pretrigger_time.toFixed(3)}s`
-                        : "Unavailable"}
+
+                  <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                    <div className="space-y-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Outcome</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(
+                          [
+                            { typeKey: "hit" as const, api: "break" as const, label: "Break" },
+                            { typeKey: "miss" as const, api: "miss" as const, label: "Miss" },
+                            { typeKey: "unknown" as const, api: "unknown" as const, label: "Unknown" },
+                          ] as const
+                        ).map((opt) => {
+                          const active = selectedShot.type === opt.typeKey;
+                          return (
+                            <button
+                              key={opt.api}
+                              type="button"
+                              disabled={classificationSavingId === selectedShot.id || active}
+                              onClick={() => patchShotClassification(selectedShot.id, { break_label: opt.api })}
+                              className={`rounded-full border px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider transition ${
+                                active
+                                  ? `${OUTCOME_STYLES[opt.typeKey].badge} cursor-default`
+                                  : "border-white/15 bg-slate-900/60 text-slate-300 hover:border-white/25 hover:bg-slate-800/80 disabled:opacity-40"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Station</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {STATION_OPTIONS.map((opt) => {
+                          const active = stationOptionIsActive(selectedShot.station, opt.value);
+                          return (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              disabled={classificationSavingId === selectedShot.id || active}
+                              onClick={() =>
+                                patchShotClassification(selectedShot.id, {
+                                  station: opt.value === "unknown" ? "" : opt.value,
+                                })
+                              }
+                              className={`rounded-full border px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                                active
+                                  ? "border-sky-400/50 bg-sky-500/15 text-sky-100 cursor-default"
+                                  : "border-white/15 bg-slate-900/60 text-slate-300 hover:border-white/25 hover:bg-slate-800/80 disabled:opacity-40"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <label
+                        htmlFor={`presentation-${selectedShot.id}`}
+                        className="block text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500"
+                      >
+                        Presentation
+                      </label>
+                      <select
+                        id={`presentation-${selectedShot.id}`}
+                        title="Presentation angle"
+                        disabled={classificationSavingId === selectedShot.id}
+                        value={
+                          PRESENTATION_OPTIONS.some((o) => o.value === selectedShot.presentation)
+                            ? selectedShot.presentation
+                            : selectedShot.presentation || "straight"
+                        }
+                        onChange={(e) => patchShotClassification(selectedShot.id, { presentation: e.target.value })}
+                        className="w-full rounded-xl border border-white/15 bg-slate-950/80 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50 disabled:opacity-40"
+                      >
+                        {!PRESENTATION_OPTIONS.some((o) => o.value === selectedShot.presentation) &&
+                          selectedShot.presentation && (
+                            <option value={selectedShot.presentation}>
+                              {selectedShot.presentation.replace(/_/g, " ")} (current)
+                            </option>
+                          )}
+                        {PRESENTATION_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="rounded-xl border border-white/10 bg-slate-900/40 px-4 py-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Pre-trigger</div>
+                      <div className="mt-1 text-sm font-semibold normal-case tracking-normal text-white">
+                        {selectedShot.pretrigger_time !== null && selectedShot.pretrigger_time !== undefined
+                          ? `${selectedShot.pretrigger_time.toFixed(3)}s`
+                          : "Unavailable"}
+                      </div>
+                      <p className="mt-2 text-[10px] font-normal normal-case tracking-normal text-slate-500">From video analysis — not editable</p>
                     </div>
                   </div>
                 </div>
@@ -1257,18 +1569,17 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                         className="absolute inset-0 h-full w-full object-contain"
                       />
                     ) : (
-                      <img
-                        src={`http://localhost:8000/api/videos/frame?path=${encodeURIComponent(selectedShot.video_path)}&time_ms=${Math.round((selectedShot.pretrigger_time ?? photoFrame?.time ?? 1) * 1000)}`}
+                      <Image
+                        src={`http://localhost:8000/api/videos/frame?path=${encodeURIComponent(selectedShot.video_path)}&frame_idx=${selectedShot.pretrigger_frame_idx ?? photoFrame?.frame_idx ?? -1}&time_ms=${Math.round((selectedShot.pretrigger_time ?? photoFrame?.time ?? 1) * 1000)}`}
                         alt="Pre-trigger frame"
+                        fill
+                        unoptimized
+                        sizes="(max-width: 1280px) 100vw, 70vw"
                         className="absolute inset-0 h-full w-full object-contain pointer-events-none"
                       />
                     )}
 
-                    {replayMode === "video" ? (
-                      <div ref={videoOverlayContainerRef} className="absolute inset-0 pointer-events-none z-20" />
-                    ) : (
-                      <OverlayBoxes boxes={overlayBoxes} crosshairX={baseCrosshairX} crosshairY={baseCrosshairY} />
-                    )}
+                    <OverlayBoxes boxes={overlayBoxes} crosshairX={baseCrosshairX} crosshairY={baseCrosshairY} />
                   </div>
                 </div>
               </motion.div>

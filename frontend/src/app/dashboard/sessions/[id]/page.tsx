@@ -150,14 +150,73 @@ function getPhotoFrame(shot: ShotData | null): TrackingFrame | null {
   );
 }
 
-function getOverlayFrameForTime(trackingData: TrackingFrame[] | undefined, currentTime: number): TrackingFrame | null {
-  if (!trackingData?.length) return null;
-  let activeFrame = trackingData[0];
-  for (const frame of trackingData) {
-    if (frame.time > currentTime) break;
-    activeFrame = frame;
+function lerpNum(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+function interpolateBbox(a: OverlayBbox, b: OverlayBbox, t: number): OverlayBbox {
+  return {
+    x: lerpNum(a.x, b.x, t),
+    y: lerpNum(a.y, b.y, t),
+    width: lerpNum(a.width, b.width, t),
+    height: lerpNum(a.height, b.height, t),
+  };
+}
+
+function interpolateOverlayBoxes(prevBoxes: OverlayBox[], nextBoxes: OverlayBox[], t: number): OverlayBox[] {
+  if (!prevBoxes.length) return prevBoxes;
+  if (!nextBoxes.length) return prevBoxes;
+
+  const nextByClass = new Map<string, OverlayBox>();
+  for (const box of nextBoxes) {
+    const cn = (box.class_name ?? "").toLowerCase();
+    if (!nextByClass.has(cn)) nextByClass.set(cn, box);
   }
-  return activeFrame;
+
+  return prevBoxes.map((boxA) => {
+    const cn = (boxA.class_name ?? "").toLowerCase();
+    const boxB = nextByClass.get(cn);
+    if (!boxB) return boxA;
+
+    const bboxA = normalizeBbox(boxA);
+    const bboxB = normalizeBbox(boxB);
+    if (!bboxA || !bboxB) return boxA;
+
+    return {
+      ...boxA,
+      confidence: lerpNum(boxA.confidence ?? 0, boxB.confidence ?? 0, t),
+      bbox: interpolateBbox(bboxA, bboxB, t),
+    };
+  });
+}
+
+function getInterpolatedOverlayForTime(
+  trackingData: TrackingFrame[] | undefined,
+  currentTime: number,
+): { frame: TrackingFrame | null; boxes: OverlayBox[] } {
+  if (!trackingData?.length) return { frame: null, boxes: [] };
+
+  let prevIdx = 0;
+  for (let i = 0; i < trackingData.length; i++) {
+    if (trackingData[i].time > currentTime) break;
+    prevIdx = i;
+  }
+
+  const prev = trackingData[prevIdx];
+  const prevBoxes = prev.overlay_boxes ?? [];
+
+  if (prevIdx + 1 >= trackingData.length) {
+    return { frame: prev, boxes: prevBoxes };
+  }
+
+  const next = trackingData[prevIdx + 1];
+  const span = Math.max(next.time - prev.time, 0.001);
+  const t = Math.min(1, Math.max(0, (currentTime - prev.time) / span));
+
+  return {
+    frame: prev,
+    boxes: interpolateOverlayBoxes(prevBoxes, next.overlay_boxes ?? [], t),
+  };
 }
 
 type AxisScale = { scale: (value: number) => number };
@@ -442,6 +501,157 @@ const OverlayBoxes = ({
   );
 };
 
+interface ValidationCheck {
+  name: string;
+  status: "pass" | "fail" | "warn";
+  detail: string;
+}
+
+interface ValidationPackageInfo {
+  spec_version?: string;
+  video_filename?: string;
+  validation_status?: string;
+  validation_checks?: ValidationCheck[];
+  review_video?: string;
+  screenshots?: string[];
+  station_prediction?: string;
+  break_prediction?: string;
+  trigger_time_ms?: number;
+}
+
+interface ValidationRun {
+  run_dir?: string;
+  packages?: ValidationPackageInfo[];
+}
+
+const CHECK_STATUS_STYLES: Record<string, string> = {
+  pass: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+  fail: "bg-rose-500/10 text-rose-400 border-rose-500/20",
+  warn: "bg-amber-500/10 text-amber-300 border-amber-500/20",
+};
+
+const ValidationPanel = ({ shots }: { shots: ShotData[] }) => {
+  const [runs, setRuns] = useState<ValidationRun[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState<number | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const fetchRuns = () => {
+    setLoading(true);
+    fetch("http://localhost:8000/api/validation/packages")
+      .then((res) => res.json())
+      .then((data: ValidationRun[]) => setRuns(data))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetch("http://localhost:8000/api/validation/packages")
+      .then((res) => res.json())
+      .then((data: ValidationRun[]) => setRuns(data))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleGenerate = (videoId: number) => {
+    setGenerating(videoId);
+    fetch(`http://localhost:8000/api/validation/generate?video_id=${videoId}`, { method: "POST" })
+      .then((res) => res.json())
+      .then(() => {
+        setTimeout(fetchRuns, 3000);
+      })
+      .catch(() => {})
+      .finally(() => setGenerating(null));
+  };
+
+  const videoIds = [...new Set(shots.map((s) => s.video_id).filter(Boolean))] as number[];
+
+  return (
+    <motion.div variants={itemVariants} className="xl:col-span-4 mt-2">
+      <div className="glass-panel rounded-2xl p-6 relative overflow-hidden">
+        <div className="flex items-center justify-between mb-6 border-b border-white/10 pb-4">
+          <h2 className="text-lg font-bold flex items-center gap-2 text-white">
+            <Target className="w-5 h-5 text-cyan-400" /> Validation Packages
+          </h2>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={fetchRuns}
+              className="px-4 py-1.5 rounded-full text-xs font-semibold text-slate-300 bg-white/5 border border-white/10 hover:bg-white/10 transition-all"
+            >
+              Refresh
+            </button>
+            {videoIds.map((vid) => (
+              <button
+                key={vid}
+                onClick={() => handleGenerate(vid)}
+                disabled={generating !== null}
+                className="px-4 py-1.5 rounded-full text-xs font-semibold text-cyan-300 bg-cyan-500/10 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all disabled:opacity-50"
+              >
+                {generating === vid ? "Generating..." : `Generate for Video ${vid}`}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {loading && <p className="text-sm text-slate-400">Loading validation packages...</p>}
+
+        {!loading && runs.length === 0 && (
+          <p className="text-sm text-slate-500">No validation packages generated yet. Click Generate to create one.</p>
+        )}
+
+        {runs.map((run, runIdx) => {
+          const runName = (run.run_dir ?? "").split("/").pop() ?? `run_${runIdx}`;
+          return (
+            <div key={runIdx} className="mb-4">
+              <button
+                onClick={() => setExpanded(expanded === runName ? null : runName)}
+                className="w-full text-left px-4 py-3 rounded-xl bg-slate-800/50 hover:bg-slate-800/80 transition-colors flex items-center justify-between"
+              >
+                <span className="text-sm font-semibold text-white">{runName}</span>
+                <span className="text-xs text-slate-400">{(run.packages ?? []).length} package(s)</span>
+              </button>
+              {expanded === runName && (
+                <div className="mt-2 space-y-3 pl-4">
+                  {(run.packages ?? []).map((pkg, pkgIdx) => {
+                    const status = pkg.validation_status ?? "unknown";
+                    const statusStyle = CHECK_STATUS_STYLES[status] ?? CHECK_STATUS_STYLES.warn;
+                    return (
+                      <div key={pkgIdx} className="rounded-xl border border-white/10 bg-slate-900/40 p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="text-sm font-semibold text-white">{pkg.video_filename ?? "Unknown clip"}</span>
+                          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${statusStyle}`}>
+                            {status}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 text-xs text-slate-400 mb-3">
+                          <div>Station: <span className="text-white">{pkg.station_prediction ?? "-"}</span></div>
+                          <div>Break: <span className="text-white">{pkg.break_prediction ?? "-"}</span></div>
+                          <div>Trigger: <span className="text-white">{pkg.trigger_time_ms ? `${pkg.trigger_time_ms}ms` : "-"}</span></div>
+                        </div>
+                        {pkg.validation_checks && (
+                          <div className="space-y-1">
+                            {pkg.validation_checks.map((check, checkIdx) => (
+                              <div key={checkIdx} className="flex items-center gap-2 text-xs">
+                                <span className={`inline-block w-2 h-2 rounded-full ${check.status === "pass" ? "bg-emerald-400" : check.status === "fail" ? "bg-rose-400" : "bg-amber-400"}`} />
+                                <span className="text-slate-300 font-mono">{check.name}</span>
+                                <span className="text-slate-500 truncate flex-1">{check.detail}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </motion.div>
+  );
+};
+
 export default function SessionAnalyticsPage({ params }: { params: Promise<{ id: string }> }) {
   const [filter, setFilter] = useState("all");
   const [stationFilter, setStationFilter] = useState("all");
@@ -451,9 +661,10 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
   const [selectedShot, setSelectedShot] = useState<ShotData | null>(null);
   const [replayMode, setReplayMode] = useState<"photo" | "video">("photo");
   const [activeOverlayFrame, setActiveOverlayFrame] = useState<TrackingFrame | null>(null);
+  const [interpolatedBoxes, setInterpolatedBoxes] = useState<OverlayBox[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
   const requestRef = useRef<number | null>(null);
-  const lastOverlayFrameIdxRef = useRef<number | null>(null);
+  const lastVideoTimeRef = useRef<number>(-1);
   
   // Categorization states
   const [isEditingSession, setIsEditingSession] = useState(false);
@@ -552,7 +763,8 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
     setSelectedShot(shot);
     setReplayMode("photo");
     setActiveOverlayFrame(getPhotoFrame(shot));
-    lastOverlayFrameIdxRef.current = null;
+    setInterpolatedBoxes([]);
+    lastVideoTimeRef.current = -1;
   };
 
   useEffect(() => {
@@ -564,10 +776,12 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
     const animate = () => {
       const video = videoRef.current;
       if (video) {
-        const frame = getOverlayFrameForTime(selectedShot.tracking_data, video.currentTime);
-        if (frame && frame.frame_idx !== lastOverlayFrameIdxRef.current) {
-          lastOverlayFrameIdxRef.current = frame.frame_idx;
-          setActiveOverlayFrame(frame);
+        const vTime = video.currentTime;
+        if (Math.abs(vTime - lastVideoTimeRef.current) > 0.005) {
+          lastVideoTimeRef.current = vTime;
+          const result = getInterpolatedOverlayForTime(selectedShot.tracking_data, vTime);
+          setActiveOverlayFrame(result.frame);
+          setInterpolatedBoxes(result.boxes);
         }
       }
       requestRef.current = requestAnimationFrame(animate);
@@ -592,7 +806,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
   const photoFrame = selectedShot ? getPhotoFrame(selectedShot) : null;
   const activeFrame = replayMode === "video" ? activeOverlayFrame : photoFrame;
   const overlayBoxes = replayMode === "video"
-    ? activeFrame?.overlay_boxes ?? []
+    ? interpolatedBoxes.length ? interpolatedBoxes : (activeFrame?.overlay_boxes ?? [])
     : selectedShot?.pretrigger_boxes?.length
       ? selectedShot.pretrigger_boxes
       : photoFrame?.overlay_boxes ?? [];
@@ -1068,6 +1282,8 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
             </div>
           </div>
         </motion.div>
+
+        <ValidationPanel shots={shotData} />
 
       </div>
 

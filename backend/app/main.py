@@ -208,6 +208,84 @@ def move_video(video_id: int, move_data: VideoMove, db: Session = Depends(databa
     
     return {"status": "success", "new_session_id": target_session_id}
 
+import json as _json
+from pathlib import Path as _Path
+import tempfile as _tempfile
+
+VALIDATION_PACKAGES_ROOT = _Path(__file__).resolve().parents[1] / "validation_packages"
+
+@app.get("/api/validation/packages")
+def list_validation_packages():
+    if not VALIDATION_PACKAGES_ROOT.exists():
+        return []
+    runs = []
+    for run_dir in sorted(VALIDATION_PACKAGES_ROOT.iterdir(), reverse=True):
+        if not run_dir.is_dir() or not run_dir.name.startswith("run_"):
+            continue
+        manifest_path = run_dir / "batch_manifest.json"
+        if manifest_path.exists():
+            runs.append(_json.loads(manifest_path.read_text()))
+        else:
+            packages = []
+            for pkg_dir in sorted(run_dir.iterdir()):
+                pkg_manifest = pkg_dir / "manifest.json"
+                if pkg_manifest.exists():
+                    packages.append(_json.loads(pkg_manifest.read_text()))
+            runs.append({"run_dir": str(run_dir), "packages": packages})
+    return runs
+
+
+@app.post("/api/validation/generate")
+async def generate_validation_package(
+    background_tasks: BackgroundTasks,
+    video_id: int,
+    db: Session = Depends(database.get_db),
+):
+    video = db.query(models.Video).filter(models.Video.id == video_id).first()
+    if not video:
+        return Response(status_code=404)
+    if not os.path.exists(video.filepath):
+        return Response(status_code=404)
+
+    def _run_validation(filepath: str):
+        from cv_pipeline.pipeline import analyze_video_file
+        from cv_pipeline.validation_package import write_validation_package
+        cache_dir = _tempfile.mkdtemp(prefix="shotcache_val_")
+        try:
+            analysis = analyze_video_file(filepath, frame_stride=5, cache_frames_dir=cache_dir)
+            write_validation_package(analysis, output_root=VALIDATION_PACKAGES_ROOT)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Validation package generation failed")
+
+    background_tasks.add_task(_run_validation, video.filepath)
+    return {"status": "queued", "video_id": video_id}
+
+
+@app.get("/api/validation/packages/{run_name}/{package_name}/screenshots")
+def list_validation_screenshots(run_name: str, package_name: str):
+    pkg_dir = VALIDATION_PACKAGES_ROOT / run_name / package_name / "screenshots"
+    if not pkg_dir.exists():
+        return []
+    return sorted([f.name for f in pkg_dir.iterdir() if f.suffix in (".jpg", ".png")])
+
+
+@app.get("/api/validation/packages/{run_name}/{package_name}/screenshots/{filename}")
+def serve_validation_screenshot(run_name: str, package_name: str, filename: str):
+    path = VALIDATION_PACKAGES_ROOT / run_name / package_name / "screenshots" / filename
+    if path.exists() and path.suffix in (".jpg", ".png"):
+        return FileResponse(str(path), media_type=f"image/{path.suffix[1:]}")
+    return Response(status_code=404)
+
+
+@app.get("/api/validation/packages/{run_name}/{package_name}/review-video")
+def serve_validation_review_video(run_name: str, package_name: str):
+    path = VALIDATION_PACKAGES_ROOT / run_name / package_name / "validation_review.mp4"
+    if path.exists():
+        return FileResponse(str(path), media_type="video/mp4")
+    return Response(status_code=404)
+
+
 @app.get("/api/videos/serve")
 def serve_video(path: str):
     if os.path.exists(path):

@@ -122,7 +122,7 @@ def analyze_video_file(
         api_url="https://detect.roboflow.com",
         api_key=api_key or os.getenv("ROBOFLOW_API_KEY", ""),
     )
-    model_id = f"{project_name or os.getenv('ROBOFLOW_PROJECT', 'claytargets-id')}/{version or os.getenv('ROBOFLOW_VERSION', '27')}"
+    model_id = f"{project_name or os.getenv('ROBOFLOW_PROJECT', 'claytargets-id')}/{version or os.getenv('ROBOFLOW_VERSION', '19')}"
 
     stride = max(1, frame_stride or DEFAULT_FRAME_STRIDE)
 

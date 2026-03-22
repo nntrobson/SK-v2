@@ -604,7 +604,7 @@ def _check_overlay_alignment_iou(
         from inference_sdk import InferenceHTTPClient
 
         api_key = analysis.get("_roboflow_api_key") or os.getenv("ROBOFLOW_API_KEY", "")
-        model_id = analysis.get("_roboflow_model_id") or f"{os.getenv('ROBOFLOW_PROJECT', 'claytargets-id')}/{os.getenv('ROBOFLOW_VERSION', '27')}"
+        model_id = analysis.get("_roboflow_model_id") or f"{os.getenv('ROBOFLOW_PROJECT', 'claytargets-id')}/{os.getenv('ROBOFLOW_VERSION', '19')}"
         client = InferenceHTTPClient(
             api_url="https://detect.roboflow.com",
             api_key=api_key,

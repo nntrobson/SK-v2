@@ -58,8 +58,8 @@ def seed():
             process_video_task(video.id)
             count += 1
             print(f"Processed {count} videos...")
-            if count >= 2:
-                print("Stopping early after 2 videos for MVP testing (Full Video Tracking).")
+            if count >= 10:
+                print("Stopping early after 10 videos for MVP testing (Full Video Tracking).")
                 break
         except Exception as e:
             print(f"Failed processing {filepath}: {e}")

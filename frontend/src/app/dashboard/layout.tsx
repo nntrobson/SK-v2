@@ -5,6 +5,7 @@ import React from "react";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
 import { Target, LayoutDashboard, ListVideo, UploadCloud } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -44,7 +45,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                       transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
                     />
                   )}
-                  <div className={`relative flex items-center gap-2 ${isActive ? 'text-white' : 'text-slate-400 hover:text-slate-200'}`}>
+                  <div className={cn("relative flex items-center gap-2", isActive ? "text-white" : "text-slate-400 hover:text-slate-200")}>
                     <Icon className="w-4 h-4" />
                     {item.name}
                   </div>

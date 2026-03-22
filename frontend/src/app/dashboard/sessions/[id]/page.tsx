@@ -96,8 +96,8 @@ const OUTCOME_STYLES: Record<ShotData["type"], { color: string; label: string; b
 };
 
 const OVERLAY_CLASS_STYLES: Record<string, { border: string; text: string }> = {
-  "clay-targets": { border: "border-emerald-400", text: "text-emerald-300" },
-  "broken-clay": { border: "border-amber-400", text: "text-amber-300" },
+  "clay-targets": { border: "border-orange-500", text: "text-orange-400" },
+  "broken-clay": { border: "border-orange-500", text: "text-orange-400" },
   "trap-house": { border: "border-sky-400", text: "text-sky-300" },
   "trap-house-1-2": { border: "border-blue-400", text: "text-blue-300" },
   "trap-house-4-5": { border: "border-violet-400", text: "text-violet-300" },
@@ -775,9 +775,28 @@ const OverlayBoxes = ({
   return (
     <>
       {boxes.map((box, index) => {
-        const bbox = normalizeBbox(box);
+        let bbox = normalizeBbox(box);
         if (!bbox) return null;
+
+        const isClay = box.class_name === "clay-targets" || box.class_name === "broken-clay";
+        
+        // Double size for clays
+        if (isClay) {
+          const centerX = bbox.x + bbox.width / 2;
+          const centerY = bbox.y + bbox.height / 2;
+          const newWidth = bbox.width * 2;
+          const newHeight = bbox.height * 2;
+          bbox = {
+            x: centerX - newWidth / 2,
+            y: centerY - newHeight / 2,
+            width: newWidth,
+            height: newHeight,
+          };
+        }
+
         const style = OVERLAY_CLASS_STYLES[box.class_name] ?? { border: "border-white/70", text: "text-white" };
+        const borderWidth = isClay ? "border-[3px]" : "border-[1.5px]";
+        
         return (
           <div
             key={`${box.class_name}-${index}-${bbox.x}-${bbox.y}`}
@@ -789,7 +808,7 @@ const OverlayBoxes = ({
               height: `${(bbox.height / (crosshairY * 2)) * 100}%`,
             }}
           >
-            <div className={`relative h-full w-full rounded-[2px] border-[1.5px] ${style.border}`}>
+            <div className={`relative h-full w-full rounded-[2px] ${borderWidth} ${style.border}`}>
               <span className={`absolute -top-5 left-0 whitespace-nowrap rounded-sm bg-slate-950/80 px-1.5 py-0.5 font-mono text-[9px] font-semibold ${style.text}`}>
                 {formatClassLabel(box.class_name)} {(box.confidence ?? 0).toFixed(2)}
               </span>
@@ -1457,7 +1476,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
               <div className="relative flex min-h-0 flex-1 flex-col justify-center">
               <div className="relative mx-auto aspect-square w-full max-w-[420px] shrink-0 [&_*]:!outline-none [&_*]:focus:!outline-none [&_*]:focus-visible:!outline-none">
                 <ResponsiveContainer width="100%" height="100%">
-                <ScatterChart margin={{ top: 28, right: 26, bottom: 28, left: 26 }}>
+                <ScatterChart margin={{ top: 24, right: 24, bottom: 24, left: 24 }}>
                   <CartesianGrid strokeDasharray="3 5" stroke="#1e293b" opacity={0.45} horizontal={true} vertical={true} />
                   <XAxis
                     type="number"
@@ -1468,6 +1487,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                     tick={{ fill: "#94a3b8", fontSize: 12 }}
                     axisLine={{ stroke: "#334155" }}
                     tickLine={{ stroke: "#334155" }}
+                    height={46}
                   />
                   <YAxis
                     type="number"
@@ -1478,6 +1498,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                     tick={{ fill: "#94a3b8", fontSize: 12 }}
                     axisLine={{ stroke: "#334155" }}
                     tickLine={{ stroke: "#334155" }}
+                    width={46}
                   />
                   <ZAxis type="number" range={[150, 150]} />
                   <RechartsTooltip cursor={false} content={<ShotPlacementTooltip />} />

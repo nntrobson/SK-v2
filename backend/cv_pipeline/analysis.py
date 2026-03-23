@@ -153,8 +153,28 @@ def build_pretrigger_track(
             continue
 
         final_box = clay_box
+        
+        # Apply global stabilization to calculate true physical path
+        clay_cx = float(clay_box["x"])
+        clay_cy = float(clay_box["y"])
+        
+        transform_matrix = frame.get("transform_matrix")
+        if transform_matrix:
+            import numpy as np
+            tm = np.array(transform_matrix)
+            pt = np.array([clay_cx, clay_cy, 1.0])
+            pt_global = tm @ pt
+            clay_cx, clay_cy = pt_global[0], pt_global[1]
+            
+        # Reconstruct a global clay_pred to calculate normalized offsets
+        global_clay_pred = {
+            **clay_box,
+            "x": clay_cx,
+            "y": clay_cy
+        }
+
         normalized_x, normalized_y = calculate_clay_offset(
-            clay_pred=clay_box,
+            clay_pred=global_clay_pred,
             frame_width=frame_width,
             frame_height=frame_height,
         )

@@ -2,6 +2,16 @@
 .env
 backend/uploads/*.MP4
 backend/validation_packages/
+backend/validation_output/
+backend/test_videos/
 backend/temp_frame.jpg
 backend/stabilized_output.mp4
 stabilized_output.mp4
+*.mp4
+*.MP4
+!backend/uploads/
+*.pkl
+*.jpg
+*.png
+fake_shots.csv
+.claude/worktrees/

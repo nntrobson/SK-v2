@@ -1,3 +1,4 @@
+import os
 from typing import Optional
 
 from fastapi import FastAPI, Depends
@@ -50,6 +51,27 @@ def get_sessions(db: Session = Depends(database.get_db)):
             "status": session_status
         })
     return res
+
+@app.get("/api/shots")
+def get_all_shots(db: Session = Depends(database.get_db)):
+    """All shots across all sessions with trajectory data for cross-session analysis."""
+    shots = db.query(models.Shot).all()
+    res = []
+    for s in shots:
+        meas = db.query(models.ShotMeasurement).filter(models.ShotMeasurement.shot_id == s.id).first()
+        video = db.query(models.Video).filter(models.Video.id == s.video_id).first()
+        if not meas or not video:
+            continue
+        res.append({
+            "id": s.id,
+            "video_name": os.path.basename(video.filepath),
+            "station": getattr(s, "station", None),
+            "presentation": (s.presentation or "straight").lower(),
+            "break_label": s.break_label,
+            "trajectory": meas.trajectory or [],
+        })
+    return res
+
 
 @app.get("/api/sessions/{session_id}/shots")
 def get_session_shots(session_id: int, db: Session = Depends(database.get_db)):
@@ -368,12 +390,22 @@ async def reprocess_all_videos(
 
 @app.get("/api/videos/serve")
 def serve_video(path: str):
+    p = _Path(path)
+    review = p.parent / f"{p.stem}_review.mp4"
+    if review.exists():
+        return FileResponse(str(review), media_type="video/mp4")
     if os.path.exists(path):
         return FileResponse(path, media_type="video/mp4")
     return Response(status_code=404)
 
+
 @app.get("/api/videos/frame")
 def serve_video_frame(path: str, time_ms: int = 1000, frame_idx: int = -1):
+    p = _Path(path)
+    snapshot = p.parent / f"{p.stem}_pretrigger.jpg"
+    if snapshot.exists():
+        return FileResponse(str(snapshot), media_type="image/jpeg")
+
     if not os.path.exists(path):
         return Response(status_code=404)
 

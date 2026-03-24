@@ -79,6 +79,47 @@ def test_build_pretrigger_track_limits_points_to_before_trigger_and_computes_off
     assert summary["trajectory"][-1]["x"] == summary["normalized_x"]
 
 
+def test_build_pretrigger_track_keeps_summary_fields_in_sync_with_selected_pretrigger_frame():
+    frames = [
+        {
+            "time": 0.10,
+            "frame_idx": 6,
+            "overlay_boxes": [{"class_name": "Clay-targets", "confidence": 0.72, "x": 620, "y": 340, "width": 44, "height": 40}],
+        },
+        {
+            "time": 0.20,
+            "frame_idx": 12,
+            "overlay_boxes": [{"class_name": "Clay-targets", "confidence": 0.76, "x": 660, "y": 325, "width": 42, "height": 39}],
+        },
+        {
+            "time": 0.30,
+            "frame_idx": 18,
+            "overlay_boxes": [{"class_name": "Clay-targets", "confidence": 0.81, "x": 700, "y": 310, "width": 40, "height": 38}],
+        },
+        {
+            "time": 0.40,
+            "frame_idx": 24,
+            "overlay_boxes": [{"class_name": "Clay-targets", "confidence": 0.84, "x": 740, "y": 295, "width": 38, "height": 36}],
+        },
+    ]
+
+    summary = build_pretrigger_track(
+        frames=frames,
+        trigger_time=0.45,
+        frame_width=1280,
+        frame_height=720,
+    )
+
+    assert summary["pretrigger_time"] == 0.10
+    assert summary["clay_x"] == 620
+    assert summary["clay_y"] == 340
+    assert summary["pretrigger_boxes"][0]["x"] == 620
+    assert summary["pretrigger_boxes"][0]["y"] == 340
+    assert summary["normalized_x"] < 0
+    assert summary["normalized_y"] > 0
+    assert summary["trajectory"][-1]["x"] != summary["normalized_x"]
+
+
 def test_build_overlay_timeline_preserves_full_clip_boxes_and_primary_clay_fields():
     frames = [
         {
@@ -107,22 +148,34 @@ def test_build_overlay_timeline_preserves_full_clip_boxes_and_primary_clay_field
     assert timeline[1]["bbox"]["width"] == 38
 
 
-def test_classify_break_state_returns_unknown_when_signal_is_weak():
+def test_classify_break_state_returns_unknown_when_no_broken_clay_in_raw_predictions():
     frames = [
-        {"time": 0.30, "overlay_boxes": [{"class_name": "Clay-targets", "confidence": 0.64, "x": 700, "y": 310, "width": 40, "height": 38}]},
-        {"time": 0.48, "overlay_boxes": [{"class_name": "Broken-Clay", "confidence": 0.56, "x": 730, "y": 295, "width": 35, "height": 30}]},
+        {"time": 0.30, "overlay_boxes": [{"class_name": "Clay-targets", "confidence": 0.64, "x": 700, "y": 310, "width": 40, "height": 38}], "raw_predictions": []},
+        {"time": 0.48, "overlay_boxes": [{"class_name": "Clay-targets", "confidence": 0.55, "x": 730, "y": 295, "width": 35, "height": 30}], "raw_predictions": [{"class": "clay-targets", "confidence": 0.55, "x": 730, "y": 295, "width": 35, "height": 30}]},
     ]
 
     label, confidence = classify_break_state(frames=frames, trigger_time=0.42, break_threshold=0.7)
 
     assert label == "unknown"
-    assert round(confidence, 2) == 0.56
+
+
+def test_classify_break_state_returns_break_for_any_broken_clay_in_raw_predictions():
+    """ANY broken-clay detection in raw predictions after trigger = break."""
+    frames = [
+        {"time": 0.30, "overlay_boxes": [], "raw_predictions": []},
+        {"time": 0.48, "overlay_boxes": [], "raw_predictions": [{"class": "broken-clay", "confidence": 0.35, "x": 730, "y": 295, "width": 35, "height": 30}]},
+    ]
+
+    label, confidence = classify_break_state(frames=frames, trigger_time=0.42, break_threshold=0.7)
+
+    assert label == "break"
+    assert confidence == 0.35
 
 
 def test_classify_break_state_returns_break_for_confident_broken_clay():
     frames = [
-        {"time": 0.45, "overlay_boxes": [{"class_name": "Broken-Clay", "confidence": 0.82, "x": 730, "y": 295, "width": 35, "height": 30}]},
-        {"time": 0.52, "overlay_boxes": [{"class_name": "Broken-Clay", "confidence": 0.87, "x": 745, "y": 288, "width": 34, "height": 28}]},
+        {"time": 0.45, "overlay_boxes": [{"class_name": "Broken-Clay", "confidence": 0.82, "x": 730, "y": 295, "width": 35, "height": 30}], "raw_predictions": [{"class": "Broken-Clay", "confidence": 0.82, "x": 730, "y": 295, "width": 35, "height": 30}]},
+        {"time": 0.52, "overlay_boxes": [{"class_name": "Broken-Clay", "confidence": 0.87, "x": 745, "y": 288, "width": 34, "height": 28}], "raw_predictions": [{"class": "Broken-Clay", "confidence": 0.87, "x": 745, "y": 288, "width": 34, "height": 28}]},
     ]
 
     label, confidence = classify_break_state(frames=frames, trigger_time=0.42, break_threshold=0.7)

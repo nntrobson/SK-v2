@@ -7,8 +7,8 @@ from cv_pipeline.detectors import calculate_clay_offset
 TRAP_HOUSE_CLASSES = {"trap-house-1-2", "trap-house", "trap-house-4-5"}
 TRACKED_CLASSES = TRAP_HOUSE_CLASSES | {"clay-targets", "broken-clay"}
 DEFAULT_CLASS_THRESHOLDS = {
-    "clay-targets": 0.45,
-    "broken-clay": 0.60,
+    "clay-targets": 0.35,
+    "broken-clay": 0.40,
 }
 CLASS_RENDER_ORDER = {
     "trap-house-1-2": 0,
@@ -48,6 +48,7 @@ def format_overlay_boxes(
 ) -> List[Dict]:
     thresholds = {**DEFAULT_CLASS_THRESHOLDS, **(class_thresholds or {})}
     best_trap_house: Optional[Dict] = None
+    best_clay: Optional[Dict] = None
     formatted: List[Dict] = []
 
     for prediction in predictions:
@@ -73,21 +74,28 @@ def format_overlay_boxes(
         if confidence < thresholds.get(class_name, 0.0):
             continue
 
-        formatted.append(
-            {
-                "class_name": class_name,
-                "confidence": round(confidence, 4),
-                "x": float(prediction["x"]),
-                "y": float(prediction["y"]),
-                "width": float(prediction["width"]),
-                "height": float(prediction["height"]),
-                "bbox": build_bbox(prediction),
-            }
-        )
+        box = {
+            "class_name": class_name,
+            "confidence": round(confidence, 4),
+            "x": float(prediction["x"]),
+            "y": float(prediction["y"]),
+            "width": float(prediction["width"]),
+            "height": float(prediction["height"]),
+            "bbox": build_bbox(prediction),
+        }
+
+        if class_name == "clay-targets":
+            if not best_clay or box["confidence"] > best_clay["confidence"]:
+                best_clay = box
+            continue
+
+        formatted.append(box)
 
     ordered = []
     if best_trap_house:
         ordered.append(best_trap_house)
+    if best_clay:
+        ordered.append(best_clay)
     ordered.extend(
         sorted(
             formatted,
@@ -154,30 +162,23 @@ def build_pretrigger_track(
 
         final_box = clay_box
         
-        # Apply global stabilization to calculate true physical path
+        import numpy as np
+
         clay_cx = float(clay_box["x"])
         clay_cy = float(clay_box["y"])
-        
+        xhair_gx, xhair_gy = crosshair_x, crosshair_y
+
         transform_matrix = frame.get("transform_matrix")
         if transform_matrix:
-            import numpy as np
             tm = np.array(transform_matrix)
-            pt = np.array([clay_cx, clay_cy, 1.0])
-            pt_global = tm @ pt
-            clay_cx, clay_cy = pt_global[0], pt_global[1]
-            
-        # Reconstruct a global clay_pred to calculate normalized offsets
-        global_clay_pred = {
-            **clay_box,
-            "x": clay_cx,
-            "y": clay_cy
-        }
+            clay_global = tm @ np.array([clay_cx, clay_cy, 1.0])
+            clay_cx, clay_cy = clay_global[0], clay_global[1]
+            xhair_global = tm @ np.array([crosshair_x, crosshair_y, 1.0])
+            xhair_gx, xhair_gy = xhair_global[0], xhair_global[1]
 
-        normalized_x, normalized_y = calculate_clay_offset(
-            clay_pred=global_clay_pred,
-            frame_width=frame_width,
-            frame_height=frame_height,
-        )
+        pixel_to_inches = 4.33 / max(float(clay_box["width"]), 1.0)
+        normalized_x = round(float(clay_cx - xhair_gx) * pixel_to_inches, 2)
+        normalized_y = round(float(xhair_gy - clay_cy) * pixel_to_inches, 2)
         point = {
             "time": round(float(frame["time"]), 4),
             "frame_idx": int(frame.get("frame_idx", 0)),
@@ -198,7 +199,12 @@ def build_pretrigger_track(
             "source": "smoothed_track",
         }
         track_points.append(point)
-        trajectory.append({"x": normalized_x, "y": normalized_y})
+        trajectory.append({
+            "x": normalized_x,
+            "y": normalized_y,
+            "gx": round(float(clay_cx), 2),
+            "gy": round(float(clay_cy), 2),
+        })
 
     if not final_box or not track_points:
         return {
@@ -214,27 +220,32 @@ def build_pretrigger_track(
             "pretrigger_boxes": [],
         }
 
-    # Use the point 3 frames backward from the last pre-trigger point if available
-    last_point_idx = next((i for i, f in enumerate(frames) if float(f.get("time", 0.0)) == track_points[-1]["time"]), -1)
-    if last_point_idx != -1:
-        target_idx = max(0, last_point_idx - 3)
-        target_frame = frames[target_idx]
-        pretrigger_time = round(float(target_frame["time"]), 4)
-    else:
-        pretrigger_time = track_points[-1]["time"]
+    # Pre-trigger point = the tracked clay frame closest to 0.45s before the trigger.
+    target_pretrigger_time = trigger_time - 0.45
+    pretrigger_point = min(
+        track_points,
+        key=lambda pt: abs(float(pt["time"]) - target_pretrigger_time),
+    )
 
-    last_point = track_points[-1]
+    # Truncate trajectory and tracking_data to only include points up to the
+    # pretrigger time.  Later points (between pretrigger and trigger) are still
+    # used for break detection but should not influence trajectory classification.
+    pretrigger_cutoff = float(pretrigger_point["time"])
+    keep = [i for i, p in enumerate(track_points) if float(p["time"]) <= pretrigger_cutoff]
+    track_points = [track_points[i] for i in keep]
+    trajectory = [trajectory[i] for i in keep]
+
     return {
         "tracking_data": track_points,
         "trajectory": trajectory,
-        "pretrigger_time": pretrigger_time,
-        "clay_x": last_point["clay_x"],
-        "clay_y": last_point["clay_y"],
-        "crosshair_x": last_point["crosshair_x"],
-        "crosshair_y": last_point["crosshair_y"],
-        "normalized_x": last_point["inch_x"],
-        "normalized_y": last_point["inch_y"],
-        "pretrigger_boxes": last_point["overlay_boxes"],
+        "pretrigger_time": pretrigger_point["time"],
+        "clay_x": pretrigger_point["clay_x"],
+        "clay_y": pretrigger_point["clay_y"],
+        "crosshair_x": pretrigger_point["crosshair_x"],
+        "crosshair_y": pretrigger_point["crosshair_y"],
+        "normalized_x": pretrigger_point["inch_x"],
+        "normalized_y": pretrigger_point["inch_y"],
+        "pretrigger_boxes": pretrigger_point["overlay_boxes"],
     }
 
 
@@ -298,25 +309,33 @@ def classify_break_state(
     trigger_time: float,
     break_threshold: float = 0.70,
     miss_threshold: float = 0.70,
+    pretrigger_time: Optional[float] = None,
 ) -> Tuple[str, float]:
+    cutoff = pretrigger_time if pretrigger_time is not None else trigger_time
     max_broken_confidence = 0.0
     max_clay_confidence = 0.0
+    any_broken_detected = False
 
     for frame in frames:
-        if float(frame.get("time", 0.0)) < trigger_time:
+        if float(frame.get("time", 0.0)) < cutoff:
             continue
 
-        broken_box = _get_primary_box(frame, "broken-clay")
-        clay_box = _get_primary_box(frame, "clay-targets")
+        # Scan raw_predictions (unfiltered) so low-confidence broken-clay
+        # detections that were stripped by the overlay threshold still count.
+        for pred in frame.get("raw_predictions", []):
+            if canonical_class_name(pred.get("class")) == "broken-clay":
+                conf = float(pred.get("confidence", 0.0))
+                if conf > 0:
+                    any_broken_detected = True
+                    max_broken_confidence = max(max_broken_confidence, conf)
 
-        if broken_box:
-            max_broken_confidence = max(max_broken_confidence, float(broken_box.get("confidence", 0.0)))
+        clay_box = _get_primary_box(frame, "clay-targets")
         if clay_box:
             max_clay_confidence = max(max_clay_confidence, float(clay_box.get("confidence", 0.0)))
 
-    if max_broken_confidence >= break_threshold:
+    if any_broken_detected:
         return "break", round(max_broken_confidence, 4)
-    if max_clay_confidence >= miss_threshold and max_broken_confidence < break_threshold:
+    if max_clay_confidence >= miss_threshold:
         return "miss", round(max_clay_confidence, 4)
     return "unknown", round(max(max_broken_confidence, max_clay_confidence), 4)
 

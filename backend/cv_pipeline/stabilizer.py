@@ -110,106 +110,157 @@ class GlobalMotionStabilizer:
         return stabilized
 
 
+class CrosshairTraceAnnotator:
+    """Track and draw the gun/crosshair path in stabilized space.
+
+    The crosshair is always at frame center in screen space, but moves in
+    global (stabilized) space as the camera pans.  Drawing this trail on
+    screen shows how the gun tracked toward the target.
+    """
+
+    def __init__(self, trace_length: int = 1200, thickness: int = 2, color: tuple = (0, 0, 255)):
+        self.history: list[tuple[float, float]] = []
+        self.trace_length = trace_length
+        self.thickness = thickness
+        self.color = color
+        self.frozen = False
+
+    def freeze(self) -> None:
+        self.frozen = True
+
+    def update_and_annotate(
+        self,
+        frame: np.ndarray,
+        transform_matrix: np.ndarray,
+        frame_width: int,
+        frame_height: int,
+        clay_active: bool = False,
+    ) -> np.ndarray:
+        if not clay_active and not self.history:
+            return frame
+
+        if not self.frozen:
+            cx, cy = frame_width / 2.0, frame_height / 2.0
+            pt_global = transform_matrix @ np.array([cx, cy, 1.0])
+            self.history.append((float(pt_global[0]), float(pt_global[1])))
+
+            if len(self.history) > self.trace_length:
+                self.history.pop(0)
+
+        if len(self.history) >= 2:
+            inv_transform = np.linalg.inv(transform_matrix)
+            screen_points = []
+            for gx, gy in self.history:
+                pt_screen = inv_transform @ np.array([gx, gy, 1.0])
+                screen_points.append((int(pt_screen[0]), int(pt_screen[1])))
+
+            for i in range(1, len(screen_points)):
+                cv2.line(frame, screen_points[i - 1], screen_points[i], self.color, self.thickness)
+
+        return frame
+
+
 class StabilizedTraceAnnotator:
+    SMOOTH_WINDOW = 7
+
     def __init__(self, trace_length: int = 120, thickness: int = 2, color: tuple = (0, 165, 255)):
         self.history = {} # tracker_id -> list of (x, y) stabilized
         self.trace_length = trace_length
         self.thickness = thickness
         self.color = color
+        self.frozen = False
+
+    def freeze(self) -> None:
+        self.frozen = True
 
     def update_and_annotate(self, frame: np.ndarray, tracked_detections: sv.Detections, transform_matrix: np.ndarray) -> np.ndarray:
-        # We need to maintain the full physical trajectory history, even if the tracker misses a frame.
-        # But we also shouldn't clear history if a tracked_detection is missing for one frame,
-        # so we persist the history independently of current detections.
-        
-        # Update history with STABILIZED coords
-        for i in range(len(tracked_detections)):
-            t_id = tracked_detections.tracker_id[i]
-            bbox = tracked_detections.xyxy[i]
-            cx = (bbox[0] + bbox[2]) / 2
-            cy = (bbox[1] + bbox[3]) / 2
-            
-            if t_id not in self.history:
-                self.history[t_id] = []
-            
-            # Don't add duplicate points if the target hasn't moved (happens during tracker coasting)
-            if not self.history[t_id] or (abs(self.history[t_id][-1][0] - cx) > 0.1 or abs(self.history[t_id][-1][1] - cy) > 0.1):
-                self.history[t_id].append((cx, cy))
-            
-            # keep history length
-            if len(self.history[t_id]) > self.trace_length:
-                self.history[t_id].pop(0)
+        if not self.frozen:
+            for i in range(len(tracked_detections)):
+                t_id = tracked_detections.tracker_id[i]
+                bbox = tracked_detections.xyxy[i]
+                cx = (bbox[0] + bbox[2]) / 2
+                cy = (bbox[1] + bbox[3]) / 2
 
-        # Invert the transform matrix to map GLOBAL -> CURRENT screen coords
+                if t_id not in self.history:
+                    self.history[t_id] = []
+
+                if not self.history[t_id] or (abs(self.history[t_id][-1][0] - cx) > 0.1 or abs(self.history[t_id][-1][1] - cy) > 0.1):
+                    self.history[t_id].append((cx, cy))
+
+                if len(self.history[t_id]) > self.trace_length:
+                    self.history[t_id].pop(0)
+
         inv_transform = np.linalg.inv(transform_matrix)
 
-        # Draw traces mapped back to SCREEN coords
         for t_id, points in self.history.items():
             if len(points) < 2:
                 continue
-            
-            # For drawing continuous paths even with missing frames
-            screen_points = []
+
+            screen_points_raw = []
             for (sx, sy) in points:
-                # Apply inverse transformation
-                pt = np.array([sx, sy, 1.0])
-                pt_screen = inv_transform @ pt
-                screen_points.append((int(pt_screen[0]), int(pt_screen[1])))
-                
-            for i in range(1, len(screen_points)):
-                cv2.line(frame, screen_points[i-1], screen_points[i], self.color, self.thickness)
-                
+                pt_screen = inv_transform @ np.array([sx, sy, 1.0])
+                screen_points_raw.append((pt_screen[0], pt_screen[1]))
+
+            w = self.SMOOTH_WINDOW
+            smoothed = []
+            for i in range(len(screen_points_raw)):
+                lo = max(0, i - w // 2)
+                hi = min(len(screen_points_raw), i + w // 2 + 1)
+                avg_x = sum(p[0] for p in screen_points_raw[lo:hi]) / (hi - lo)
+                avg_y = sum(p[1] for p in screen_points_raw[lo:hi]) / (hi - lo)
+                smoothed.append((int(avg_x), int(avg_y)))
+
+            for i in range(1, len(smoothed)):
+                cv2.line(frame, smoothed[i-1], smoothed[i], self.color, self.thickness)
+
         return frame
 
 
 class TrajectoryVisualizer:
-    def __init__(self, fps: int = 60, trace_length: int = 1200): # Allow up to 20 seconds of trace length to cover any shot
-        # We use Supervision for ByteTrack and Trace Annotator
-        # track_activation_threshold is set to 0.1 to listen for low-confidence detections
+    def __init__(self, fps: int = 60, trace_length: int = 1200):
         self.tracker = sv.ByteTrack(
             track_activation_threshold=0.1,
-            lost_track_buffer=fps * 2,  # Increase coasting memory to 2 seconds
+            lost_track_buffer=fps * 2,
             minimum_matching_threshold=0.8,
             frame_rate=fps,
         )
-        self.trace_annotator = StabilizedTraceAnnotator(trace_length=trace_length, thickness=3) # thicker line
-        self.box_annotator = sv.BoxAnnotator(thickness=1)
-        self.label_annotator = sv.LabelAnnotator(text_scale=0.5, text_padding=5)
+        self.trace_annotator = StabilizedTraceAnnotator(trace_length=trace_length, thickness=3)
+        self.crosshair_annotator = CrosshairTraceAnnotator(trace_length=trace_length, thickness=2)
 
-    def process_and_annotate(self, original_frame: np.ndarray, stabilized_predictions: List[Dict], transform_matrix: np.ndarray) -> Tuple[np.ndarray, List[Dict]]:
+    def freeze_trails(self) -> None:
+        self.trace_annotator.freeze()
+        self.crosshair_annotator.freeze()
+
+    def process_and_annotate(self, original_frame: np.ndarray, stabilized_predictions: List[Dict], transform_matrix: np.ndarray, frame_width: int = 0, frame_height: int = 0) -> Tuple[np.ndarray, List[Dict]]:
         """
-        Takes stabilized predictions, semantic filters for 'clay-targets' AND conf >= 0.1,
-        runs them through ByteTrack, and annotates the frame with traces.
+        Runs stabilized clay predictions through ByteTrack, draws the trajectory
+        trace on the frame, and returns screen-mapped detection dicts so the
+        caller can draw bounding boxes in a consistent style.
         """
-        # Semantic Filtering
         clay_preds = [
-            p for p in stabilized_predictions 
+            p for p in stabilized_predictions
             if str(p.get("class_name", p.get("class", ""))).lower() == "clay-targets" and float(p.get("confidence", 0.0)) >= 0.1
         ]
 
         annotated_frame = original_frame.copy()
 
-        # If no clay predictions in current frame, update tracker with empty and update history
+        fw = frame_width or original_frame.shape[1]
+        fh = frame_height or original_frame.shape[0]
+
         if not clay_preds:
-            # When tracking is completely lost, ByteTrack will clear out old tracks 
-            # after the buffer, which clears the trace. Instead of letting ByteTrack 
-            # draw the trace, we are manually keeping track in self.history in StabilizedTraceAnnotator.
             empty_detections = sv.Detections(
                 xyxy=np.empty((0, 4)), confidence=np.array([]), class_id=np.array([])
             )
             tracked_detections = self.tracker.update_with_detections(empty_detections)
             annotated_frame = self.trace_annotator.update_and_annotate(annotated_frame, tracked_detections, transform_matrix)
+            annotated_frame = self.crosshair_annotator.update_and_annotate(annotated_frame, transform_matrix, fw, fh, clay_active=False)
             return annotated_frame, []
 
-        # Convert to supervision Detections (Stabilized)
         xyxy = []
         confidences = []
         class_ids = []
-        
-        # Inflate the bounding boxes for the tracker so that fast-moving small clays 
-        # still have overlapping IoU between frames, preventing broken tracks.
-        padding = 100 
-        
+        padding = 100
+
         for p in clay_preds:
             x, y, w, h = float(p["x"]), float(p["y"]), float(p["width"]), float(p["height"])
             xyxy.append([
@@ -219,7 +270,7 @@ class TrajectoryVisualizer:
                 y + h / 2 + padding
             ])
             confidences.append(float(p["confidence"]))
-            class_ids.append(0)  # we only have one class here essentially
+            class_ids.append(0)
 
         detections = sv.Detections(
             xyxy=np.array(xyxy),
@@ -227,26 +278,22 @@ class TrajectoryVisualizer:
             class_id=np.array(class_ids)
         )
 
-        # Temporal Linking (Tracking)
         tracked_detections = self.tracker.update_with_detections(detections)
-        
+
         if len(tracked_detections) > 0:
-            # Deflate the bounding boxes back to normal size before drawing
             tracked_detections.xyxy[:, 0] += padding
             tracked_detections.xyxy[:, 1] += padding
             tracked_detections.xyxy[:, 2] -= padding
             tracked_detections.xyxy[:, 3] -= padding
-        
-        # Annotate trace using stabilized history mapped to screen
-        annotated_frame = self.trace_annotator.update_and_annotate(annotated_frame, tracked_detections, transform_matrix)
 
+        annotated_frame = self.trace_annotator.update_and_annotate(annotated_frame, tracked_detections, transform_matrix)
+        annotated_frame = self.crosshair_annotator.update_and_annotate(annotated_frame, transform_matrix, fw, fh, clay_active=len(tracked_detections) > 0)
+
+        screen_results: List[Dict] = []
         if len(tracked_detections) > 0:
-            # Shift bounding boxes back to screen coords for drawing
             inv_transform = np.linalg.inv(transform_matrix)
-            screen_detections = copy.deepcopy(tracked_detections)
-            
-            for i in range(len(screen_detections)):
-                x1, y1, x2, y2 = screen_detections.xyxy[i]
+            for i in range(len(tracked_detections)):
+                x1, y1, x2, y2 = tracked_detections.xyxy[i]
                 pts = np.array([
                     [x1, y1, 1.0],
                     [x2, y1, 1.0],
@@ -254,41 +301,25 @@ class TrajectoryVisualizer:
                     [x1, y2, 1.0]
                 ])
                 pts_screen = (inv_transform @ pts.T).T
-                screen_detections.xyxy[i] = [
-                    pts_screen[:, 0].min(),
-                    pts_screen[:, 1].min(),
-                    pts_screen[:, 0].max(),
-                    pts_screen[:, 1].max()
-                ]
+                sx1 = float(pts_screen[:, 0].min())
+                sy1 = float(pts_screen[:, 1].min())
+                sx2 = float(pts_screen[:, 0].max())
+                sy2 = float(pts_screen[:, 1].max())
+                cx = (sx1 + sx2) / 2
+                cy = (sy1 + sy2) / 2
+                screen_results.append({
+                    "class_name": "clay-targets",
+                    "confidence": round(float(tracked_detections.confidence[i]), 4),
+                    "x": round(cx, 2),
+                    "y": round(cy, 2),
+                    "width": round(sx2 - sx1, 2),
+                    "height": round(sy2 - sy1, 2),
+                    "bbox": {
+                        "x": round(sx1, 2),
+                        "y": round(sy1, 2),
+                        "width": round(sx2 - sx1, 2),
+                        "height": round(sy2 - sy1, 2),
+                    },
+                })
 
-            annotated_frame = self.box_annotator.annotate(
-                scene=annotated_frame,
-                detections=screen_detections
-            )
-            
-            labels = [
-                f"Clay #{tracker_id} {conf:.2f}"
-                for conf, tracker_id
-                in zip(screen_detections.confidence, screen_detections.tracker_id)
-            ]
-            annotated_frame = self.label_annotator.annotate(
-                scene=annotated_frame,
-                detections=screen_detections,
-                labels=labels
-            )
-
-        # Return tracked results in dict form for potential downstream direction classification
-        tracked_results = []
-        for i in range(len(tracked_detections)):
-            t_box = tracked_detections.xyxy[i]
-            tracked_results.append({
-                "tracker_id": tracked_detections.tracker_id[i],
-                "x": (t_box[0] + t_box[2]) / 2,
-                "y": (t_box[1] + t_box[3]) / 2,
-                "width": t_box[2] - t_box[0],
-                "height": t_box[3] - t_box[1],
-                "confidence": tracked_detections.confidence[i],
-                "class": "clay-targets"
-            })
-
-        return annotated_frame, tracked_results
+        return annotated_frame, screen_results

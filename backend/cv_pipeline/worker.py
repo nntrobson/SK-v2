@@ -1,9 +1,24 @@
 import logging
+import tempfile
+from pathlib import Path
 
 from app import database, models
 from cv_pipeline.pipeline import analyze_video_file
+from cv_pipeline.validation_package import generate_dashboard_video
 
 logger = logging.getLogger(__name__)
+
+
+def _generate_dashboard_assets(analysis: dict, video_filepath: str) -> None:
+    """Generate H.264 overlay video + pretrigger snapshot next to the uploaded video."""
+    video_path = Path(video_filepath)
+    review_path = video_path.parent / f"{video_path.stem}_review.mp4"
+    snapshot_path = video_path.parent / f"{video_path.stem}_pretrigger.jpg"
+    try:
+        generate_dashboard_video(analysis, review_path, snapshot_path)
+    except Exception as exc:
+        logger.warning("Dashboard asset generation failed: %s", exc)
+
 
 def process_video_task(video_id: int):
     """
@@ -20,8 +35,9 @@ def process_video_task(video_id: int):
         video.status = "processing"
         db.commit()
 
+        cache_dir = tempfile.mkdtemp(prefix=f"shotcache_{video_id}_")
         try:
-            analysis = analyze_video_file(video.filepath)
+            analysis = analyze_video_file(video.filepath, cache_frames_dir=cache_dir)
         except ValueError:
             video.status = "error_no_shots"
             db.commit()
@@ -54,6 +70,8 @@ def process_video_task(video_id: int):
         )
         db.add(new_measurement)
         db.commit()
+
+        _generate_dashboard_assets(analysis, video.filepath)
 
         video.status = "completed"
         db.commit()

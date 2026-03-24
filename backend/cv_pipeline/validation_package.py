@@ -189,6 +189,230 @@ def draw_overlay_boxes(frame: np.ndarray, overlay_boxes: list[dict], timestamp_m
     return annotated
 
 
+def draw_trajectory_trail(
+    frame: np.ndarray,
+    tracking_data: list[dict],
+    up_to_time: Optional[float] = None,
+    color: tuple = (0, 165, 255),
+    thickness: int = 3,
+    smooth_window: int = 7,
+) -> np.ndarray:
+    """Draw the clay trajectory trail on a frame using pre-trigger tracking points."""
+    annotated = frame.copy()
+    raw_points: list[tuple[float, float]] = []
+    for pt in tracking_data:
+        t = float(pt.get("time", 0.0))
+        if up_to_time is not None and t > up_to_time:
+            break
+        cx = pt.get("clay_x")
+        cy = pt.get("clay_y")
+        if cx is not None and cy is not None:
+            raw_points.append((float(cx), float(cy)))
+
+    if len(raw_points) < 2:
+        return annotated
+
+    w = smooth_window
+    smoothed = []
+    for i in range(len(raw_points)):
+        lo = max(0, i - w // 2)
+        hi = min(len(raw_points), i + w // 2 + 1)
+        avg_x = sum(p[0] for p in raw_points[lo:hi]) / (hi - lo)
+        avg_y = sum(p[1] for p in raw_points[lo:hi]) / (hi - lo)
+        smoothed.append((int(round(avg_x)), int(round(avg_y))))
+
+    for i in range(1, len(smoothed)):
+        cv2.line(annotated, smoothed[i - 1], smoothed[i], color, thickness)
+
+    return annotated
+
+
+def _first_clay_time(frame_analysis: list[dict]) -> Optional[float]:
+    """Return the time of the first frame with a clay-targets detection."""
+    for fa in frame_analysis:
+        for box in fa.get("overlay_boxes", []):
+            if (box.get("class_name") or "").lower() == "clay-targets":
+                return float(fa.get("time", 0.0))
+    return None
+
+
+def draw_crosshair_trail(
+    frame: np.ndarray,
+    frame_analysis: list[dict],
+    up_to_time: Optional[float] = None,
+    frame_width: int = 0,
+    frame_height: int = 0,
+    color: tuple = (0, 0, 255),
+    thickness: int = 2,
+) -> np.ndarray:
+    """Draw the gun/crosshair path using stored transform matrices.
+
+    Only starts recording once the first clay detection appears, so
+    pre-shot camera movement doesn't clutter the trail.
+    """
+    annotated = frame.copy()
+    fw = frame_width or frame.shape[1]
+    fh = frame_height or frame.shape[0]
+    cx, cy = fw / 2.0, fh / 2.0
+
+    clay_start = _first_clay_time(frame_analysis)
+
+    global_points: list[tuple[float, float]] = []
+    current_transform = None
+    for fa in frame_analysis:
+        t = float(fa.get("time", 0.0))
+        if up_to_time is not None and t > up_to_time:
+            break
+        if clay_start is not None and t < clay_start:
+            continue
+        tm = fa.get("transform_matrix")
+        if tm is None:
+            continue
+        mat = np.array(tm, dtype=np.float64)
+        pt_global = mat @ np.array([cx, cy, 1.0])
+        global_points.append((float(pt_global[0]), float(pt_global[1])))
+        current_transform = mat
+
+    if len(global_points) < 2 or current_transform is None:
+        return annotated
+
+    inv_transform = np.linalg.inv(current_transform)
+    screen_points = []
+    for gx, gy in global_points:
+        pt_screen = inv_transform @ np.array([gx, gy, 1.0])
+        screen_points.append((int(pt_screen[0]), int(pt_screen[1])))
+
+    for i in range(1, len(screen_points)):
+        cv2.line(annotated, screen_points[i - 1], screen_points[i], color, thickness)
+
+    return annotated
+
+
+def generate_scatter_plot(
+    analysis: dict,
+    output_path,
+    figsize: tuple = (8, 8),
+) -> None:
+    """Generate a dark-themed scatter plot matching the dashboard aesthetic.
+
+    Shows the shot dot, faint trajectory trace, and the parabolic projection
+    line from the fitted curve (x = a*y^2 + b*y + c).
+    """
+    import math
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import FancyArrowPatch
+
+    BG = "#0d1117"
+    PANEL = "#151b23"
+    GRID = "#1e2530"
+    AXIS_LINE = "#2a3340"
+    LABEL_COLOR = "#4a5568"
+    TEXT_COLOR = "#94a3b8"
+
+    pretrigger = analysis.get("pretrigger_summary", {})
+    trajectory = pretrigger.get("trajectory", [])
+    norm_x = float(pretrigger.get("normalized_x", 0.0))
+    norm_y = float(pretrigger.get("normalized_y", 0.0))
+    station = analysis.get("station", "unknown")
+    presentation = analysis.get("presentation", "unknown")
+    break_label = analysis.get("break_label", "unknown")
+
+    fig, ax = plt.subplots(figsize=figsize, facecolor=BG)
+    ax.set_facecolor(PANEL)
+
+    for spine in ax.spines.values():
+        spine.set_color(AXIS_LINE)
+    ax.tick_params(colors=TEXT_COLOR, labelsize=8)
+
+    # Crosshair lines
+    ax.axvline(x=0, color=AXIS_LINE, linewidth=0.8)
+    ax.axhline(y=0, color=AXIS_LINE, linewidth=0.8)
+
+    # Quadrant labels
+    all_vals = [abs(norm_x), abs(norm_y)] + [abs(float(p["x"])) for p in trajectory] + [abs(float(p["y"])) for p in trajectory]
+    extent = max(10.0, math.ceil(max(all_vals) + 2)) if all_vals else 10.0
+    ax.set_xlim(-extent, extent)
+    ax.set_ylim(-extent, extent)
+
+    ax.text(0, extent * 0.92, "TARGET ABOVE FRAME CENTER", ha="center", va="top", fontsize=7, color=LABEL_COLOR, weight="bold")
+    ax.text(0, -extent * 0.92, "TARGET BELOW FRAME CENTER", ha="center", va="bottom", fontsize=7, color=LABEL_COLOR, weight="bold")
+    ax.text(-extent * 0.92, 0, "TARGET LEFT\nOF FRAME CENTER", ha="left", va="center", fontsize=6, color=LABEL_COLOR, weight="bold", rotation=90)
+    ax.text(extent * 0.92, 0, "TARGET RIGHT\nOF FRAME CENTER", ha="right", va="center", fontsize=6, color=LABEL_COLOR, weight="bold", rotation=-90)
+
+    # Trajectory trace (faint growing dots like dashboard)
+    if len(trajectory) >= 2:
+        traj_xs = [float(p["x"]) for p in trajectory]
+        traj_ys = [float(p["y"]) for p in trajectory]
+        n = len(traj_xs)
+        for i in range(n):
+            t = i / max(n - 1, 1)
+            r = max(1.0, 3.5 * t)
+            alpha = 0.15 + 0.35 * (t ** 1.3)
+            ax.plot(traj_xs[i], traj_ys[i], "o", color="#f97316", markersize=r, alpha=alpha, zorder=2)
+
+    # Parabolic projection line (from pipeline's classify_presentation)
+    if len(trajectory) >= 3:
+        raw_xs = [float(p["x"]) for p in trajectory]
+        raw_ys = [float(p["y"]) for p in trajectory]
+        x0, y0 = raw_xs[0], raw_ys[0]
+        xs_n = [x - x0 for x in raw_xs]
+        ys_n = [y - y0 for y in raw_ys]
+
+        if station == "trap-house-1-2":
+            xs_n = [x - 3.5 for x in xs_n]
+        elif station == "trap-house-4-5":
+            xs_n = [x + 3.5 for x in xs_n]
+
+        ys_arr = np.array(ys_n, dtype=np.float64)
+        xs_arr = np.array(xs_n, dtype=np.float64)
+        A = np.column_stack([ys_arr ** 2, ys_arr, np.ones_like(ys_arr)])
+        coeffs, _, _, _ = np.linalg.lstsq(A, xs_arr, rcond=None)
+        a, b, c = coeffs
+
+        # Un-normalize back to original coordinate space for drawing
+        y_range = np.linspace(min(raw_ys) - 2, max(raw_ys) + 2, 80)
+        x_fit = a * (y_range - y0) ** 2 + b * (y_range - y0) + c + x0
+        if station == "trap-house-1-2":
+            x_fit += 3.5
+        elif station == "trap-house-4-5":
+            x_fit -= 3.5
+
+        ax.plot(x_fit, y_range, color="#38bdf8", linewidth=1.5, linestyle="--", alpha=0.6, zorder=1, label="Projected path")
+
+    # Shot dot
+    if break_label == "break":
+        dot_color, glow_color = "#4ade80", "#22c55e"
+    elif break_label == "miss":
+        dot_color, glow_color = "#f87171", "#ef4444"
+    else:
+        dot_color, glow_color = "#fbbf24", "#f59e0b"
+
+    ax.plot(norm_x, norm_y, "o", color=glow_color, markersize=18, alpha=0.12, zorder=3)
+    ax.plot(norm_x, norm_y, "o", color=dot_color, markersize=8, alpha=0.92, zorder=4, markeredgecolor=BG, markeredgewidth=1)
+
+    # Inner bright dot
+    inner = "#a7f3d0" if break_label == "break" else ("#fecaca" if break_label == "miss" else "#fde68a")
+    ax.plot(norm_x, norm_y, "o", color=inner, markersize=3, alpha=0.95, zorder=5)
+
+    ax.grid(True, color=GRID, linewidth=0.5, alpha=0.6)
+    ax.set_aspect("equal")
+
+    title = Path(analysis.get("video_path", "")).stem
+    subtitle = f"{station}  ·  {presentation.replace('_', ' ')}  ·  {break_label}"
+    ax.set_title(f"{title}\n{subtitle}", fontsize=10, color=TEXT_COLOR, pad=12)
+    ax.set_xlabel("Normalized X (inches)", fontsize=8, color=TEXT_COLOR)
+    ax.set_ylabel("Normalized Y (inches)", fontsize=8, color=TEXT_COLOR)
+
+    if any(line.get_label() and not line.get_label().startswith("_") for line in ax.get_lines()):
+        ax.legend(fontsize=7, loc="upper right", facecolor=PANEL, edgecolor=AXIS_LINE, labelcolor=TEXT_COLOR)
+
+    fig.tight_layout()
+    fig.savefig(str(output_path), dpi=150, facecolor=BG)
+    plt.close(fig)
+
+
 def build_audio_envelope(audio_data: Optional[np.ndarray], width: int) -> np.ndarray:
     if audio_data is None or len(audio_data) == 0:
         return np.zeros(width, dtype=np.float32)
@@ -517,6 +741,10 @@ def write_validation_package(
         ret, f = cap_obj.read()
         return f if ret else None
 
+    pretrigger_tracking = analysis.get("pretrigger_summary", {}).get("tracking_data", [])
+    frame_analysis_for_screenshots = analysis.get("frame_analysis", [])
+    screenshot_pretrigger_time = analysis.get("pretrigger_summary", {}).get("pretrigger_time")
+
     cap = cv2.VideoCapture(analysis["video_path"])
     screenshot_files: list[str] = []
     for index, selection in enumerate(selected_frames):
@@ -525,8 +753,21 @@ def write_validation_package(
         if frame is None:
             continue
         analysis_frame = _find_analysis_frame_by_idx(analysis, frame_idx) or selection["frame"]
-        annotated = draw_overlay_boxes(
+        trail_cutoff = min(float(selection["time"]), screenshot_pretrigger_time) if screenshot_pretrigger_time is not None else float(selection["time"])
+        annotated = draw_crosshair_trail(
             frame,
+            frame_analysis_for_screenshots,
+            up_to_time=trail_cutoff,
+            frame_width=int(analysis["frame_width"]),
+            frame_height=int(analysis["frame_height"]),
+        )
+        annotated = draw_trajectory_trail(
+            annotated,
+            pretrigger_tracking,
+            up_to_time=trail_cutoff,
+        )
+        annotated = draw_overlay_boxes(
+            annotated,
             analysis_frame.get("overlay_boxes", []),
             timestamp_ms=int(round(float(selection["time"]) * 1000)),
         )
@@ -569,10 +810,19 @@ def write_validation_package(
         stabilizer = None
         visualizer = None
 
+    pretrigger_time = analysis["pretrigger_summary"].get("pretrigger_time")
+    trails_frozen = False
+    pretrigger_frame_captured = False
+
     for frame_idx in range(total_frames):
         frame = _read_frame(cap, frame_idx)
         if frame is None:
             break
+
+        current_time = frame_idx / fps
+        if not trails_frozen and pretrigger_time is not None and current_time >= pretrigger_time and visualizer:
+            visualizer.freeze_trails()
+            trails_frozen = True
 
         while tracking_idx + 1 < len(tracking_data) and int(tracking_data[tracking_idx + 1]["frame_idx"]) <= frame_idx:
             tracking_idx += 1
@@ -584,16 +834,23 @@ def write_validation_package(
             raw_preds = _interpolate_raw_predictions(frame_analysis_data, tracking_idx, frame_idx)
             transform_matrix = stabilizer.process_frame(annotated_frame)
             stabilized_preds = stabilizer.stabilize_predictions(raw_preds, transform_matrix)
-            annotated_frame, _ = visualizer.process_and_annotate(annotated_frame, stabilized_preds, transform_matrix)
+            annotated_frame, _ = visualizer.process_and_annotate(annotated_frame, stabilized_preds, transform_matrix, frame_width=width, frame_height=height)
 
-        # Still draw overlay boxes (like trap house, or high-confidence broken clay)
-        # But we might filter out clay-targets if the visualizer already draws them nicely,
-        # but drawing both is also fine (it adds the confidence score which is nice).
         annotated_frame = draw_overlay_boxes(
             annotated_frame,
             overlay_boxes,
             timestamp_ms=int(round((frame_idx / fps) * 1000)),
         )
+
+        # Capture the pretrigger frame from the video render (with
+        # stabilizer trails) so the screenshot matches the video exactly.
+        if not pretrigger_frame_captured and trails_frozen:
+            pretrigger_screenshot_path = screenshots_dir / "pretrigger_snapshot.jpg"
+            cv2.imwrite(str(pretrigger_screenshot_path), annotated_frame)
+            if str(pretrigger_screenshot_path) not in screenshot_files:
+                screenshot_files.append(str(pretrigger_screenshot_path))
+            pretrigger_frame_captured = True
+
         waveform_panel = render_waveform_panel(
             width=width,
             height=panel_height,
@@ -606,6 +863,9 @@ def write_validation_package(
 
     writer.release()
     cap.release()
+
+    scatter_plot_path = package_dir / "scatter_plot.png"
+    generate_scatter_plot(analysis, scatter_plot_path)
 
     manifest = _build_manifest(
         analysis=analysis,
@@ -629,6 +889,93 @@ def write_validation_package(
     manifest_path = package_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
     return package_dir
+
+
+def generate_dashboard_video(
+    analysis: dict,
+    output_video_path,
+    output_snapshot_path,
+) -> None:
+    """Generate a browser-playable overlay video (H.264, no waveform) and pretrigger snapshot."""
+    import subprocess
+
+    fps = float(analysis["fps"]) or 60.0
+    width = int(analysis["frame_width"])
+    height = int(analysis["frame_height"])
+    total_frames = int(analysis["total_frames"])
+    tracking_data = analysis["tracking_data"]
+    frame_analysis_data = analysis.get("frame_analysis", [])
+
+    cached_frames: dict[int, str] = analysis.get("cached_frames", {})
+    use_cache = bool(cached_frames)
+
+    def _read(cap_obj, idx: int):
+        if use_cache and idx in cached_frames:
+            return cv2.imread(cached_frames[idx])
+        cap_obj.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, f = cap_obj.read()
+        return f if ret else None
+
+    try:
+        from cv_pipeline.stabilizer import GlobalMotionStabilizer, TrajectoryVisualizer
+        stabilizer = GlobalMotionStabilizer()
+        visualizer = TrajectoryVisualizer(fps=int(fps), trace_length=int(fps * 20))
+    except Exception:
+        stabilizer = None
+        visualizer = None
+
+    tmp_path = str(output_video_path) + ".tmp.mp4"
+    cap = cv2.VideoCapture(analysis["video_path"])
+    writer = cv2.VideoWriter(tmp_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+
+    tracking_idx = 0
+    pretrigger_time = analysis["pretrigger_summary"].get("pretrigger_time")
+    trails_frozen = False
+    snapshot_captured = False
+
+    for frame_idx in range(total_frames):
+        frame = _read(cap, frame_idx)
+        if frame is None:
+            break
+
+        current_time = frame_idx / fps
+        if not trails_frozen and pretrigger_time is not None and current_time >= pretrigger_time and visualizer:
+            visualizer.freeze_trails()
+            trails_frozen = True
+
+        while tracking_idx + 1 < len(tracking_data) and int(tracking_data[tracking_idx + 1]["frame_idx"]) <= frame_idx:
+            tracking_idx += 1
+
+        overlay_boxes = _interpolate_overlay_boxes(tracking_data, tracking_idx, frame_idx)
+        annotated = frame.copy()
+
+        if stabilizer and visualizer:
+            raw_preds = _interpolate_raw_predictions(frame_analysis_data, tracking_idx, frame_idx)
+            tm = stabilizer.process_frame(annotated)
+            sp = stabilizer.stabilize_predictions(raw_preds, tm)
+            annotated, _ = visualizer.process_and_annotate(annotated, sp, tm, frame_width=width, frame_height=height)
+
+        annotated = draw_overlay_boxes(annotated, overlay_boxes, timestamp_ms=int(round(current_time * 1000)))
+
+        if not snapshot_captured and trails_frozen:
+            cv2.imwrite(str(output_snapshot_path), annotated)
+            snapshot_captured = True
+
+        writer.write(annotated)
+
+    writer.release()
+    cap.release()
+
+    # Re-encode to H.264 for browser playback
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", tmp_path, "-c:v", "libx264", "-preset", "fast",
+             "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(output_video_path)],
+            capture_output=True, timeout=300,
+        )
+        os.unlink(tmp_path)
+    except Exception:
+        os.rename(tmp_path, str(output_video_path))
 
 
 def _compute_iou(box_a: dict, box_b: dict) -> float:

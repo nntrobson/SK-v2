@@ -13,6 +13,7 @@ import {
   ReferenceDot,
   ReferenceArea,
   ReferenceLine,
+  Customized,
 } from "recharts";
 import { ArrowLeft, Target, Activity, Video, Crosshair, Sparkles, SlidersHorizontal, X } from "lucide-react";
 import Link from "next/link";
@@ -188,17 +189,24 @@ function stationOptionIsActive(station: string | null | undefined, optionValue: 
  */
 function getProportionalSymmetricDomain(
   shots: ShotData[],
-  minimumExtent: number,
+  minimumExtent: number = 10,
   padding: number,
 ): [number, number] {
   if (shots.length === 0) {
     return [-minimumExtent, minimumExtent];
   }
 
-  const maxAbs = shots.reduce(
+  let maxAbs = shots.reduce(
     (m, shot) => Math.max(m, Math.abs(shot.x), Math.abs(shot.y)),
     0,
   );
+  for (const shot of shots) {
+    if (shot.trajectory) {
+      for (const pt of shot.trajectory) {
+        maxAbs = Math.max(maxAbs, Math.abs(pt.x), Math.abs(pt.y));
+      }
+    }
+  }
   const extent = Math.max(minimumExtent, Math.ceil((maxAbs + padding) * 2) / 2);
   
   // Enforce a strict 1:1 scale (X scale = Y scale) by returning exactly symmetric bounds.
@@ -297,7 +305,7 @@ type TrajectoryShapeProps = {
   anySelected?: boolean;
 };
 
-/** Thin red + matching ShotKam-style bead overlay (pixel coords from ReferenceDot). */
+/** Thin red + at chart origin (0,0) — frame-center reference; pixel coords from ReferenceDot. */
 function BeadCenterCrosshairShape(props: { cx?: number; cy?: number }) {
   const cx = props.cx ?? 0;
   const cy = props.cy ?? 0;
@@ -327,27 +335,52 @@ function BeadCenterCrosshairShape(props: { cx?: number; cy?: number }) {
   );
 }
 
+function buildTrailElements(
+  prefix: string,
+  trajectory: Array<{ x: number; y: number }> | undefined,
+  xAxis: { scale: (v: number) => number } | undefined,
+  yAxis: { scale: (v: number) => number } | undefined,
+  fill: string,
+  anySelected: boolean | undefined,
+  isSelected: boolean | undefined,
+): React.ReactNode[] {
+  if (!trajectory || trajectory.length < 2 || !xAxis || !yAxis) return [];
+  const scaleX = xAxis.scale;
+  const scaleY = yAxis.scale;
+  const denominator = Math.max(trajectory.length - 1, 1);
+  const trailOpacityMul = anySelected && !isSelected ? 0.15 : 1;
+
+  const elements: React.ReactNode[] = [];
+
+  const linePoints = trajectory.map((pt) => `${scaleX(pt.x)},${scaleY(pt.y)}`).join(" ");
+  elements.push(
+    <polyline
+      key={`${prefix}-line`}
+      points={linePoints}
+      fill="none"
+      stroke={fill}
+      strokeWidth={1}
+      strokeOpacity={0.18 * trailOpacityMul}
+      style={{ pointerEvents: "none" }}
+    />
+  );
+
+  for (let i = 0; i < trajectory.length; i++) {
+    const pt = trajectory[i];
+    const px = scaleX(pt.x);
+    const py = scaleY(pt.y);
+    const t = i / denominator;
+    const radius = Math.max(1.25, 3.25 * t);
+    const opacity = 0.35 * Math.pow(t, 1.3) * trailOpacityMul;
+    elements.push(<circle key={`${prefix}-${i}`} cx={px} cy={py} r={radius} fill={fill} fillOpacity={opacity} style={{ pointerEvents: "none" }} />);
+  }
+  return elements;
+}
+
 const TrajectoryDot = (props: TrajectoryShapeProps) => {
   const { cx, cy, fill, payload, xAxis, yAxis, onClickShot, isSelected, anySelected } = props;
 
-  const dots = [];
-  if (isSelected && payload.trajectory && payload.trajectory.length > 0 && xAxis && yAxis) {
-    const scaleX = xAxis.scale;
-    const scaleY = yAxis.scale;
-    const denominator = Math.max(payload.trajectory.length - 1, 1);
-
-    for (let i = 0; i < payload.trajectory.length; i++) {
-      const pt = payload.trajectory[i];
-      const px = scaleX(pt.x);
-      const py = scaleY(pt.y);
-
-      const t = i / denominator;
-      const radius = Math.max(1.25, 3.25 * t);
-      const opacity = 0.35 * Math.pow(t, 1.3);
-
-      dots.push(<circle key={`tail-${i}`} cx={px} cy={py} r={radius} fill={fill} fillOpacity={opacity} style={{ pointerEvents: "none" }} />);
-    }
-  }
+  const dots = buildTrailElements("tail", payload.trajectory, xAxis, yAxis, fill, anySelected, isSelected);
 
   const opacity = anySelected ? (isSelected ? 1 : 0.25) : 1;
 
@@ -372,24 +405,7 @@ const TrajectoryDot = (props: TrajectoryShapeProps) => {
 const TrajectoryMiss = (props: TrajectoryShapeProps) => {
   const { cx, cy, fill, payload, xAxis, yAxis, onClickShot, isSelected, anySelected } = props;
 
-  const dots = [];
-  if (isSelected && payload.trajectory && payload.trajectory.length > 0 && xAxis && yAxis) {
-    const scaleX = xAxis.scale;
-    const scaleY = yAxis.scale;
-    const denominator = Math.max(payload.trajectory.length - 1, 1);
-
-    for (let i = 0; i < payload.trajectory.length; i++) {
-      const pt = payload.trajectory[i];
-      const px = scaleX(pt.x);
-      const py = scaleY(pt.y);
-
-      const t = i / denominator;
-      const radius = Math.max(1.25, 3.25 * t);
-      const opacity = 0.25 * Math.pow(t, 1.2);
-
-      dots.push(<circle key={`miss-tail-${i}`} cx={px} cy={py} r={radius} fill="#94a3b8" fillOpacity={opacity} style={{ pointerEvents: "none" }} />);
-    }
-  }
+  const dots = buildTrailElements("miss-tail", payload.trajectory, xAxis, yAxis, "#94a3b8", anySelected, isSelected);
 
   const opacity = anySelected ? (isSelected ? 1 : 0.25) : 1;
 
@@ -406,24 +422,7 @@ const TrajectoryMiss = (props: TrajectoryShapeProps) => {
 const TrajectoryUnknown = (props: TrajectoryShapeProps) => {
   const { cx, cy, fill, payload, xAxis, yAxis, onClickShot, isSelected, anySelected } = props;
 
-  const dots = [];
-  if (isSelected && payload.trajectory && payload.trajectory.length > 0 && xAxis && yAxis) {
-    const scaleX = xAxis.scale;
-    const scaleY = yAxis.scale;
-    const denominator = Math.max(payload.trajectory.length - 1, 1);
-
-    for (let i = 0; i < payload.trajectory.length; i++) {
-      const pt = payload.trajectory[i];
-      const px = scaleX(pt.x);
-      const py = scaleY(pt.y);
-
-      const t = i / denominator;
-      const radius = Math.max(1.25, 3 * t);
-      const opacity = 0.2 * Math.pow(t, 1.15);
-
-      dots.push(<circle key={`unknown-tail-${i}`} cx={px} cy={py} r={radius} fill={fill} fillOpacity={opacity} style={{ pointerEvents: "none" }} />);
-    }
-  }
+  const dots = buildTrailElements("unknown-tail", payload.trajectory, xAxis, yAxis, fill, anySelected, isSelected);
 
   const opacity = anySelected ? (isSelected ? 1 : 0.25) : 1;
 
@@ -482,10 +481,71 @@ const ShotPlacementTooltip = ({
         </div>
       </div>
       <div className="mt-3 text-[11px] leading-relaxed text-slate-400">
-        Target position relative to bead at the shot.
+        Target offset from frame center at the shot (same reference as the chart origin).
         {shot.station ? ` Station: ${formatStationLabel(shot.station)}.` : ""}
       </div>
     </div>
+  );
+};
+
+function computeParabolicProjection(
+  trajectory: Array<{ x: number; y: number }>,
+  station?: string | null,
+): Array<{ x: number; y: number }> | null {
+  if (!trajectory || trajectory.length < 3) return null;
+
+  const rawXs = trajectory.map((p) => p.x);
+  const rawYs = trajectory.map((p) => p.y);
+  const x0 = rawXs[0], y0 = rawYs[0];
+  let xsN = rawXs.map((x) => x - x0);
+  const ysN = rawYs.map((y) => y - y0);
+
+  if (station === "trap-house-1-2") xsN = xsN.map((x) => x - 3.5);
+  else if (station === "trap-house-4-5") xsN = xsN.map((x) => x + 3.5);
+
+  const n = ysN.length;
+  let sy = 0, sy2 = 0, sy3 = 0, sy4 = 0, sx = 0, sxy = 0, sxy2 = 0;
+  for (let i = 0; i < n; i++) {
+    const y = ysN[i], x = xsN[i];
+    sy += y; sy2 += y * y; sy3 += y * y * y; sy4 += y * y * y * y;
+    sx += x; sxy += x * y; sxy2 += x * y * y;
+  }
+  const det = n * (sy2 * sy4 - sy3 * sy3) - sy * (sy * sy4 - sy2 * sy3) + sy2 * (sy * sy3 - sy2 * sy2);
+  if (Math.abs(det) < 1e-12) return null;
+
+  const a = (sx * (sy2 * sy4 - sy3 * sy3) - sxy * (sy * sy4 - sy2 * sy3) + sxy2 * (sy * sy3 - sy2 * sy2)) / det;
+  const b = (n * (sxy * sy4 - sxy2 * sy3) - sy * (sx * sy4 - sxy2 * sy2) + sy2 * (sx * sy3 - sxy * sy2)) / det;
+  const c = (n * (sy2 * sxy2 - sy3 * sxy) - sy * (sy * sxy2 - sy3 * sx) + sy2 * (sy * sxy - sy2 * sx)) / det;
+
+  const yMin = Math.min(...ysN) - 2;
+  const yMax = Math.max(...ysN) + 2;
+  const steps = 60;
+  const points: Array<{ x: number; y: number }> = [];
+  for (let s = 0; s <= steps; s++) {
+    const yy = yMin + (yMax - yMin) * (s / steps);
+    let xx = a * yy * yy + b * yy + c;
+    if (station === "trap-house-1-2") xx += 3.5;
+    else if (station === "trap-house-4-5") xx -= 3.5;
+    points.push({ x: xx + x0, y: yy + y0 });
+  }
+  return points;
+}
+
+const ProjectionLine = ({ selectedShot, xAxisMap, yAxisMap }: { selectedShot: ShotData | null; xAxisMap?: Record<string, { scale: (v: number) => number }>; yAxisMap?: Record<string, { scale: (v: number) => number }> }) => {
+  if (!selectedShot?.trajectory?.length || !xAxisMap || !yAxisMap) return null;
+  const xAxis = Object.values(xAxisMap)[0];
+  const yAxis = Object.values(yAxisMap)[0];
+  if (!xAxis?.scale || !yAxis?.scale) return null;
+
+  const projPts = computeParabolicProjection(selectedShot.trajectory, selectedShot.station);
+  if (!projPts || projPts.length < 2) return null;
+
+  const d = projPts
+    .map((p, i) => `${i === 0 ? "M" : "L"}${xAxis.scale(p.x)},${yAxis.scale(p.y)}`)
+    .join(" ");
+
+  return (
+    <path d={d} fill="none" stroke="#38bdf8" strokeWidth={1.5} strokeDasharray="6 4" opacity={0.6} />
   );
 };
 
@@ -1342,7 +1402,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                   <Target className="h-5 w-5 text-sky-400" /> Shot Placement Matrix
                 </h2>
                 <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">
-                  Each mark shows where the target sat relative to your bead at the shot. The plot is square with matching X/Y scales so distance in data units matches a true crosshair offset. The red + at the origin matches the ShotKam bead. Green shows the break window, red shows where misses leak, and the dashed guide tracks the average of what is currently visible.
+                  Each mark shows where the target sat relative to <strong className="text-slate-300">frame center</strong> at the shot (the same reference the analysis pipeline uses). The plot is square with matching X/Y scales so distance in data units matches a true crosshair offset. The red + marks <strong className="text-slate-300">(0, 0)</strong>—zero offset from frame center—not where the physical bead or muzzle appears in the photo; the barrel is often along the top edge while math stays centered. Green shows the break window, red shows where misses leak, and the dashed guide tracks the average of what is currently visible.
                   {selectedShot ? (
                     <span className="mt-2 block text-xs text-slate-500">
                       Click the same point again, press <kbd className="rounded border border-white/10 bg-slate-900/80 px-1 py-0.5 font-mono text-[10px] text-slate-400">Esc</kbd>
@@ -1352,28 +1412,6 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                 </p>
               </div>
               <div className="flex flex-col items-stretch gap-3 sm:items-end">
-                <div className="flex w-full flex-col gap-1.5 sm:w-auto sm:min-w-[10.5rem]">
-                  <label
-                    htmlFor="session-presentation-filter"
-                    className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500"
-                  >
-                    Presentation
-                  </label>
-                  <select
-                    id="session-presentation-filter"
-                    title="Filter chart by presentation angle"
-                    className="w-full cursor-pointer appearance-none rounded-xl border border-slate-700/60 bg-slate-950/80 py-2 pl-3 pr-8 text-sm text-white transition focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                    value={filter}
-                    onChange={(e) => setFilter(e.target.value)}
-                  >
-                    <option value="all">All Targets</option>
-                    <option value="straight">Straightaway</option>
-                    <option value="hard_left">Hard Left</option>
-                    <option value="hard_right">Hard Right</option>
-                    <option value="moderate_left">Moderate Left</option>
-                    <option value="moderate_right">Moderate Right</option>
-                  </select>
-                </div>
                 {selectedShot ? (
                   <button
                     type="button"
@@ -1431,7 +1469,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                 <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-sky-200/70">How To Read This Angle</div>
                 <div className="mt-2 text-sm font-semibold leading-relaxed text-white">
                   {filter === "all"
-                    ? "Right of center means the target stayed right of your bead. Above center means the gun finished low."
+                    ? "Right of center means the target stayed right of frame center. Above center means the gun finished low."
                     : `For ${formatPresentationFilterLabel(filter).toLowerCase()} birds, right of center usually reads ${positiveSideRead?.toLowerCase()}.`}
                 </div>
               </div>
@@ -1439,7 +1477,29 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
 
             <div className="grid gap-5 xl:grid-cols-12 xl:items-stretch xl:gap-6">
               <div className="flex min-h-0 w-full flex-col xl:col-span-3 xl:h-full">
-                <div className="flex h-full min-h-[420px] w-full flex-col justify-between gap-8 rounded-2xl border border-white/10 bg-slate-950/30 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] xl:min-h-0 xl:sticky xl:top-24 xl:max-h-[calc(100vh-8rem)] xl:overflow-y-auto">
+                <div className="flex h-full min-h-[420px] w-full flex-col gap-8 rounded-2xl border border-white/10 bg-slate-950/30 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] xl:min-h-0 xl:sticky xl:top-24 xl:max-h-[calc(100vh-8rem)] xl:overflow-y-auto">
+                  <div className="flex w-full flex-col gap-1.5">
+                    <label
+                      htmlFor="session-presentation-filter"
+                      className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500"
+                    >
+                      Presentation
+                    </label>
+                    <select
+                      id="session-presentation-filter"
+                      title="Filter chart by presentation angle"
+                      className="w-full cursor-pointer appearance-none rounded-xl border border-slate-700/60 bg-slate-950/80 py-2 pl-3 pr-8 text-sm text-white transition focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                      value={filter}
+                      onChange={(e) => setFilter(e.target.value)}
+                    >
+                      <option value="all">All Targets</option>
+                      <option value="straight">Straightaway</option>
+                      <option value="hard_left">Hard Left</option>
+                      <option value="hard_right">Hard Right</option>
+                      <option value="moderate_left">Moderate Left</option>
+                      <option value="moderate_right">Moderate Right</option>
+                    </select>
+                  </div>
                   <div>
                     <h3 className="mb-4 text-[10px] font-bold uppercase tracking-[0.22em] text-slate-500">Trajectory</h3>
                     <TrajectorySelector
@@ -1468,10 +1528,10 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
               <div className="pointer-events-none absolute inset-x-6 top-1/2 h-px -translate-y-1/2 bg-cyan-400/15" />
               <div className="pointer-events-none absolute inset-y-6 left-1/2 w-px -translate-x-1/2 bg-cyan-400/15" />
               {/* Axis Labels */}
-              <p className="absolute left-1/2 top-3 -translate-x-1/2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Target Above Bead</p>
-              <p className="absolute bottom-3 left-1/2 -translate-x-1/2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Target Below Bead</p>
-              <p className="absolute left-3 top-1/2 -translate-y-1/2 -rotate-90 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Target Left Of Bead</p>
-              <p className="absolute right-3 top-1/2 translate-y-1/2 rotate-90 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Target Right Of Bead</p>
+              <p className="absolute left-1/2 top-3 -translate-x-1/2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Target Above Frame Center</p>
+              <p className="absolute bottom-3 left-1/2 -translate-x-1/2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Target Below Frame Center</p>
+              <p className="absolute left-3 top-1/2 -translate-y-1/2 -rotate-90 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Target Left Of Frame Center</p>
+              <p className="absolute right-3 top-1/2 translate-y-1/2 rotate-90 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">Target Right Of Frame Center</p>
               
               <div className="relative flex min-h-0 flex-1 flex-col justify-center">
               <div className="relative mx-auto aspect-square w-full max-w-[420px] shrink-0 [&_*]:!outline-none [&_*]:focus:!outline-none [&_*]:focus-visible:!outline-none">
@@ -1514,7 +1574,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                     shape={(dotProps) => <BeadCenterCrosshairShape cx={dotProps.cx} cy={dotProps.cy} />}
                     label={{
                       position: "top",
-                      value: "Bead Center",
+                      value: "Frame center (0, 0)",
                       fill: "#cbd5e1",
                       fontSize: 11,
                       fontWeight: 700,
@@ -1590,6 +1650,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                     fill="#f59e0b" 
                     shape={(props: unknown) => <TrajectoryUnknown {...(props as TrajectoryShapeProps)} onClickShot={handleSelectShot} anySelected={!!selectedShot} isSelected={selectedShot?.id === (props as TrajectoryShapeProps).payload?.id} />} 
                   />
+                  <Customized component={(props: Record<string, unknown>) => <ProjectionLine selectedShot={selectedShot} xAxisMap={props.xAxisMap as Record<string, { scale: (v: number) => number }>} yAxisMap={props.yAxisMap as Record<string, { scale: (v: number) => number }>} />} />
                 </ScatterChart>
                 </ResponsiveContainer>
               </div>
@@ -1790,17 +1851,18 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                         className="absolute inset-0 h-full w-full object-contain"
                       />
                     ) : (
-                      <Image
-                        src={`http://localhost:8000/api/videos/frame?path=${encodeURIComponent(selectedShot.video_path)}&frame_idx=${selectedShot.pretrigger_frame_idx ?? photoFrame?.frame_idx ?? -1}&time_ms=${Math.round((selectedShot.pretrigger_time ?? photoFrame?.time ?? 1) * 1000)}`}
-                        alt="Pre-trigger frame"
-                        fill
-                        unoptimized
-                        sizes="(max-width: 1280px) 100vw, 70vw"
-                        className="absolute inset-0 h-full w-full object-contain pointer-events-none"
-                      />
+                      <>
+                        <Image
+                          src={`http://localhost:8000/api/videos/frame?path=${encodeURIComponent(selectedShot.video_path)}&frame_idx=${selectedShot.pretrigger_frame_idx ?? photoFrame?.frame_idx ?? -1}&time_ms=${Math.round((selectedShot.pretrigger_time ?? photoFrame?.time ?? 1) * 1000)}`}
+                          alt="Pre-trigger frame"
+                          fill
+                          unoptimized
+                          sizes="(max-width: 1280px) 100vw, 70vw"
+                          className="absolute inset-0 h-full w-full object-contain pointer-events-none"
+                        />
+                        <OverlayBoxes boxes={overlayBoxes} crosshairX={baseCrosshairX} crosshairY={baseCrosshairY} />
+                      </>
                     )}
-
-                    <OverlayBoxes boxes={overlayBoxes} crosshairX={baseCrosshairX} crosshairY={baseCrosshairY} />
                   </div>
                 </div>
               </motion.div>

@@ -4,7 +4,7 @@ import Link from "next/link";
 import React from "react";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
-import { Target, LayoutDashboard, ListVideo, UploadCloud } from "lucide-react";
+import { Target, LayoutDashboard, ListVideo, UploadCloud, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -14,6 +14,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { name: "Overview", href: "/dashboard", icon: LayoutDashboard },
     { name: "Sessions", href: "/dashboard/sessions", icon: ListVideo },
     { name: "Upload", href: "/dashboard/upload", icon: UploadCloud },
+    { name: "Analysis", href: "/dashboard/analysis", icon: Activity },
   ];
 
   return (

@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_FPS = float(os.getenv("SHOTKAM_DEFAULT_FPS", "60"))
 DEFAULT_FRAME_STRIDE = max(1, int(os.getenv("ROBOFLOW_FRAME_STRIDE", "5")))
-CLAY_THRESHOLD = float(os.getenv("CLAY_CONFIDENCE_THRESHOLD", "0.45"))
-BROKEN_THRESHOLD = float(os.getenv("BROKEN_CLAY_CONFIDENCE_THRESHOLD", "0.60"))
+CLAY_THRESHOLD = float(os.getenv("CLAY_CONFIDENCE_THRESHOLD", "0.35"))
+BROKEN_THRESHOLD = float(os.getenv("BROKEN_CLAY_CONFIDENCE_THRESHOLD", "0.40"))
 BREAK_DECISION_THRESHOLD = float(os.getenv("BREAK_DECISION_THRESHOLD", "0.70"))
 MISS_DECISION_THRESHOLD = float(os.getenv("MISS_DECISION_THRESHOLD", "0.75"))
 
@@ -116,13 +116,14 @@ def _compute_outlier_mask(xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
 def classify_presentation(trajectory: list[dict], station: str) -> str:
     """Classify shot direction using parabolic trajectory fit.
 
-    Fits x = ay^2 + by + c to the station-corrected trajectory after
-    outlier rejection (backward motion + Mahalanobis on step vectors).
-    Direction is the tangent angle at the y-midpoint.
+    Uses stabilized global-space coordinates (gx/gy) when available so
+    the fit sees the clay's physical flight path rather than its position
+    relative to the moving crosshair.  Falls back to normalized x/y if
+    global coords are absent.
 
     Pipeline:
       1. Origin-normalize (first point -> 0,0)
-      2. Apply station perspective correction (+/-3.5 inches)
+      2. Apply station perspective correction (+/-3.5 px for global coords)
       3. Outlier mask: endpoint trim + backward motion + Mahalanobis
       4. Parabolic least-squares fit on clean points
       5. Angle = atan(dx/dy at y_mid) in degrees
@@ -130,16 +131,23 @@ def classify_presentation(trajectory: list[dict], station: str) -> str:
     if len(trajectory) < 2:
         return "straight"
 
-    raw_xs = [float(p["x"]) for p in trajectory]
-    raw_ys = [float(p["y"]) for p in trajectory]
+    use_global = all("gx" in p and "gy" in p for p in trajectory)
+    if use_global:
+        raw_xs = [float(p["gx"]) for p in trajectory]
+        raw_ys = [float(p["gy"]) for p in trajectory]
+    else:
+        raw_xs = [float(p["x"]) for p in trajectory]
+        raw_ys = [float(p["y"]) for p in trajectory]
+
     x0, y0 = raw_xs[0], raw_ys[0]
     xs_list = [x - x0 for x in raw_xs]
     ys_list = [y - y0 for y in raw_ys]
 
-    if station == "trap-house-1-2":
-        xs_list = [x - 3.5 for x in xs_list]
-    elif station == "trap-house-4-5":
-        xs_list = [x + 3.5 for x in xs_list]
+    if not use_global:
+        if station == "trap-house-1-2":
+            xs_list = [x - 3.5 for x in xs_list]
+        elif station == "trap-house-4-5":
+            xs_list = [x + 3.5 for x in xs_list]
 
     xs_all = np.array(xs_list)
     ys_all = np.array(ys_list)
@@ -364,6 +372,7 @@ def analyze_video_file(
         trigger_time=trigger_time,
         break_threshold=BREAK_DECISION_THRESHOLD,
         miss_threshold=MISS_DECISION_THRESHOLD,
+        pretrigger_time=pretrigger_summary.get("pretrigger_time"),
     )
     presentation = classify_presentation(pretrigger_summary["trajectory"], station or "unknown")
 

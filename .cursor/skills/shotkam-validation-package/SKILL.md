@@ -14,8 +14,13 @@ Each package should include:
 - `extracted_data.csv` with per-frame and per-detection extracted data
 - `manifest.json` with summary timings and artifact paths
 - `screenshots/` with `15-20` overlaid screenshots spread through the clip
+- `scatter_plot.png` — shot position on a scatter plot with faint trajectory trace
 - `validation_review.mp4` with:
-  - original video plus detection overlays on top
+  - original video plus detection overlays on top:
+    - **orange bounding box** for clay targets (from stabilized screen-mapped positions)
+    - **red trajectory trail** showing the clay flight path
+    - **green bounding box** for trap house
+    - **blue bounding box** for broken clay (threshold: 0.40)
   - audio amplitude waveform on the bottom
   - timestamp in milliseconds on the top-right
   - waveform markers for:
@@ -28,6 +33,7 @@ Required screenshot milestones:
 - pre-trigger frame used for clay position
 - frame used for break vs miss decision
 - additional spread frames before and after the shot
+- all screenshots include the **red trajectory trail** drawn up to that frame's time and **orange clay bounding boxes**
 
 ## Default Validation Clip
 
@@ -70,12 +76,15 @@ python3 scripts/generate_validation_packages.py --screenshot-count 18
 - The script depends on Roboflow credentials. Prefer environment variables:
   - `ROBOFLOW_API_KEY`
   - `ROBOFLOW_PROJECT`
-  - `ROBOFLOW_VERSION` (default: `19`; version 19 outperforms version 27 on break detection and continuity)
+  - `ROBOFLOW_VERSION` (default: `29`)
+- Model `claytargets-id/29` is the current best version for detection accuracy.
 - If the user already provided credentials in chat, they may be passed via script flags for the current run, but should not be hardcoded into repo files.
-- Use the generated screenshots and review video as the primary visual QA assets.
+- Use the generated screenshots, scatter plot, and review video as the primary visual QA assets.
 - Use `batch_summary.csv` as the quick index for a multi-video run.
-- The review video uses linear interpolation for bounding boxes between stride frames so overlays track smoothly with the clay's motion.
+- The review video uses **stabilized screen-mapped** clay positions (via optical-flow global motion compensation) so bounding boxes track accurately even between stride frames.
+- The trajectory trail is drawn in **red** using stabilized tracking history mapped back to screen coordinates.
 - Frame caching ensures screenshots use the exact frames the model analyzed, avoiding OpenCV seek misalignment.
+- **Break classification**: ANY detection of `broken-clay` class in raw predictions after the trigger pull classifies the shot as a break — no confidence threshold gate. The overlay display threshold for broken-clay bounding boxes is 0.40.
 
 ## Automated Pass/Fail Checks
 
@@ -104,6 +113,16 @@ Each package generates a `validation_results.json` with automated checks. The ov
    - Inspect the screenshots in `screenshots/` to visually verify.
    - Watch `validation_review.mp4` to confirm overlay alignment and audio timing.
 4. Report findings: which clips passed, which failed, and what the failure mode was.
+
+## Reference / Gold-Standard Package
+
+The package at `validation_packages/run_20260322_185727/9a35ccd8-7306-4a1c-9eee-2a67124c2523` (commit `cc5fb6f`) is the **known-good baseline**:
+- IoU overlay alignment: 1.000 across all sampled frames
+- Bounding boxes drawn from **interpolated overlay_boxes** (not ByteTrack screen-mapped positions, which add tracker latency/lag)
+- Stabilizer used **only** for trajectory trace, not for bounding box positioning
+- This approach keeps boxes snapped to the detection position without ByteTrack coasting artifacts
+
+When making changes to the rendering pipeline, always compare against this package to ensure no regression.
 
 ## References
 - Package format and artifact expectations: [reference.md](reference.md)

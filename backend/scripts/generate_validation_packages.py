@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-stride", type=int, default=None)
     parser.add_argument("--api-key", default=os.getenv("ROBOFLOW_API_KEY"))
     parser.add_argument("--project-name", default=os.getenv("ROBOFLOW_PROJECT", "claytargets-id"))
-    parser.add_argument("--version", default=os.getenv("ROBOFLOW_VERSION", "19"))
+    parser.add_argument("--version", default=os.getenv("ROBOFLOW_VERSION", "29"))
     parser.add_argument("--filenames", nargs="*", default=None)
     return parser.parse_args()
 

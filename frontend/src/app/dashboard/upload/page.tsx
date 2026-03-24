@@ -8,9 +8,6 @@ import {
   ProcessingProgressBar,
   type ProcessingPayload,
 } from "@/components/dashboard/ProcessingProgressBar";
-import { getApiBaseUrl } from "@/lib/api-base";
-
-const API = getApiBaseUrl();
 
 const VIDEO_ACCEPT =
   "video/mp4,video/avi,video/quicktime,video/x-msvideo,.mp4,.avi,.mov,.MOV";
@@ -47,7 +44,7 @@ export default function UploadPage() {
           if (TERMINAL_UPLOAD_STATUSES.has(video.status)) return video;
 
           try {
-            const response = await fetch(`${API}/api/videos/${video.videoId}/processing-status`);
+            const response = await fetch(`/api/videos/${video.videoId}/processing-status`);
             if (!response.ok) return video;
             const payload = await response.json();
             return {
@@ -90,7 +87,7 @@ export default function UploadPage() {
       const formData = new FormData();
       selectedFiles.forEach((file) => formData.append("files", file));
       
-      const response = await fetch(`${API}/api/videos/upload-batch`, {
+      const response = await fetch(`/api/videos/upload-batch`, {
         method: "POST",
         body: formData,
       });
@@ -145,9 +142,7 @@ export default function UploadPage() {
       console.error("Transmission failed:", error);
       const msg =
         error instanceof Error ? error.message : "Upload failed.";
-      alert(
-        `Upload failed: ${msg}\n\nCheck that the API is running (${API}) and the database schema is up to date (alembic upgrade head in /backend).`
-      );
+      alert(`Upload failed: ${msg}`);
       setUploading(false);
     }
   };

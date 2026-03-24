@@ -47,21 +47,85 @@ def infer_predictions(client: Any, model_id: str, frame) -> list[dict]:
 
 DIRECTION_THRESH_MODERATE = float(os.getenv("DIRECTION_THRESH_MODERATE", "8"))
 DIRECTION_THRESH_HARD = float(os.getenv("DIRECTION_THRESH_HARD", "30"))
+MAHALANOBIS_THRESHOLD = float(os.getenv("MAHALANOBIS_THRESHOLD", "3.0"))
+
+
+def _compute_outlier_mask(xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
+    """Build a boolean mask marking outlier trajectory points.
+
+    Three-stage filter matching the validated HTML classifier:
+      1. Endpoint trimming (first and last points — noisy detection edges)
+      2. Backward motion — step moves against the dominant trajectory direction
+      3. Mahalanobis distance on (dx, dy) step vectors — catches sudden jumps
+    """
+    n = len(xs)
+    mask = np.zeros(n, dtype=bool)
+    if n <= 4:
+        return mask
+
+    mask[0] = True
+    mask[n - 1] = True
+
+    # Backward motion: dot(step, dominant_direction) < 0
+    dir_x = xs[-1] - xs[0]
+    dir_y = ys[-1] - ys[0]
+    dir_len = math.sqrt(dir_x * dir_x + dir_y * dir_y)
+    if dir_len > 0.01:
+        udx, udy = dir_x / dir_len, dir_y / dir_len
+        for i in range(2, n - 1):
+            step_x = xs[i] - xs[i - 1]
+            step_y = ys[i] - ys[i - 1]
+            if step_x * udx + step_y * udy < 0:
+                mask[i] = True
+
+    # Mahalanobis distance on step vectors between clean (non-masked) points
+    steps = []
+    for i in range(1, n):
+        if mask[i] or mask[i - 1]:
+            continue
+        steps.append((xs[i] - xs[i - 1], ys[i] - ys[i - 1], i))
+
+    if len(steps) >= 4:
+        dxs = np.array([s[0] for s in steps])
+        dys = np.array([s[1] for s in steps])
+        mean_dx, mean_dy = dxs.mean(), dys.mean()
+
+        cx = dxs - mean_dx
+        cy = dys - mean_dy
+        sxx = np.mean(cx * cx)
+        sxy = np.mean(cx * cy)
+        syy = np.mean(cy * cy)
+
+        det = sxx * syy - sxy * sxy
+        if det > 1e-10:
+            inv_sxx = syy / det
+            inv_sxy = -sxy / det
+            inv_syy = sxx / det
+            for j, (dx, dy, orig_idx) in enumerate(steps):
+                cdx = dx - mean_dx
+                cdy = dy - mean_dy
+                mah = math.sqrt(
+                    cdx * cdx * inv_sxx + 2 * cdx * cdy * inv_sxy + cdy * cdy * inv_syy
+                )
+                if mah > MAHALANOBIS_THRESHOLD:
+                    mask[orig_idx] = True
+
+    return mask
 
 
 def classify_presentation(trajectory: list[dict], station: str) -> str:
     """Classify shot direction using parabolic trajectory fit.
 
-    Fits x = ay^2 + by + c to the origin-normalized, station-corrected
-    trajectory. Direction is the tangent angle at the y-midpoint.
+    Fits x = ay^2 + by + c to the station-corrected trajectory after
+    outlier rejection (backward motion + Mahalanobis on step vectors).
+    Direction is the tangent angle at the y-midpoint.
 
     Pipeline:
       1. Origin-normalize (first point -> 0,0)
       2. Apply station perspective correction (+/-3.5 inches)
-      3. Trim first/last points (noisy detection edges)
-      4. Outlier rejection (2-sigma residual filter, refit)
-      5. Parabolic least-squares fit
-      6. Angle = atan(dx/dy at y_mid) in degrees
+      3. Outlier mask: endpoint trim + backward motion + Mahalanobis
+      4. Parabolic least-squares fit on clean points
+      5. Angle = atan(dx/dy at y_mid) in degrees
     """
     if len(trajectory) < 2:
         return "straight"
@@ -69,39 +133,37 @@ def classify_presentation(trajectory: list[dict], station: str) -> str:
     raw_xs = [float(p["x"]) for p in trajectory]
     raw_ys = [float(p["y"]) for p in trajectory]
     x0, y0 = raw_xs[0], raw_ys[0]
-    xs = [x - x0 for x in raw_xs]
-    ys = [y - y0 for y in raw_ys]
+    xs_list = [x - x0 for x in raw_xs]
+    ys_list = [y - y0 for y in raw_ys]
 
     if station == "trap-house-1-2":
-        xs = [x - 3.5 for x in xs]
+        xs_list = [x - 3.5 for x in xs_list]
     elif station == "trap-house-4-5":
-        xs = [x + 3.5 for x in xs]
+        xs_list = [x + 3.5 for x in xs_list]
 
-    if len(xs) > 4:
-        xs = xs[1:-1]
-        ys = ys[1:-1]
+    xs_all = np.array(xs_list)
+    ys_all = np.array(ys_list)
 
-    if len(xs) < 3:
-        delta_x = xs[-1] - xs[0]
-        angle_deg = math.atan2(delta_x, ys[-1] - ys[0]) * (180.0 / math.pi) if (ys[-1] - ys[0]) != 0 else 0.0
+    mask = _compute_outlier_mask(xs_all, ys_all)
+    xs_clean = xs_all[~mask]
+    ys_clean = ys_all[~mask]
+
+    if len(xs_clean) < 3:
+        # Not enough clean points — fall back to all points
+        a, b, c, r2 = _quadratic_fit(ys_all, xs_all)
+        if len(ys_all) < 3:
+            delta_x = float(xs_all[-1] - xs_all[0])
+            dy = float(ys_all[-1] - ys_all[0])
+            angle_deg = math.atan2(delta_x, dy) * (180.0 / math.pi) if dy != 0 else 0.0
+            return _classify_angle(angle_deg)
+        y_mid = (ys_all[0] + ys_all[-1]) / 2.0
+        slope_at_mid = 2 * a * y_mid + b
+        angle_deg = math.atan(slope_at_mid) * (180.0 / math.pi)
         return _classify_angle(angle_deg)
 
-    xs_arr = np.array(xs)
-    ys_arr = np.array(ys)
-    a, b, c, r2 = _quadratic_fit(ys_arr, xs_arr)
+    a, b, c, r2 = _quadratic_fit(ys_clean, xs_clean)
 
-    if len(xs_arr) > 5:
-        residuals = xs_arr - (a * ys_arr**2 + b * ys_arr + c)
-        mean_r = np.mean(residuals)
-        std_r = np.std(residuals)
-        if std_r > 0.5:
-            keep = np.abs(residuals - mean_r) < 2 * std_r
-            if np.sum(keep) >= 3:
-                xs_arr = xs_arr[keep]
-                ys_arr = ys_arr[keep]
-                a, b, c, r2 = _quadratic_fit(ys_arr, xs_arr)
-
-    y_mid = (ys_arr[0] + ys_arr[-1]) / 2.0
+    y_mid = (ys_clean[0] + ys_clean[-1]) / 2.0
     slope_at_mid = 2 * a * y_mid + b
     angle_deg = math.atan(slope_at_mid) * (180.0 / math.pi)
 
@@ -115,7 +177,7 @@ def _quadratic_fit(
     if len(y_vals) < 3:
         return 0.0, 0.0, 0.0, 0.0
     A = np.column_stack([y_vals**2, y_vals, np.ones_like(y_vals)])
-    coeffs, residuals, _, _ = np.linalg.lstsq(A, x_vals, rcond=None)
+    coeffs, _, _, _ = np.linalg.lstsq(A, x_vals, rcond=None)
     a, b, c = coeffs
 
     ss_res = np.sum((x_vals - A @ coeffs) ** 2)

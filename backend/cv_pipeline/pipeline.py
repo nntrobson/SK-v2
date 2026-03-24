@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import tempfile
 from typing import Any, Dict, Optional
 
 import cv2
+import numpy as np
 
 from cv_pipeline.analysis import (
     aggregate_station_label,
@@ -43,29 +45,93 @@ def infer_predictions(client: Any, model_id: str, frame) -> list[dict]:
     return result.get("predictions", []) if isinstance(result, dict) else []
 
 
+DIRECTION_THRESH_MODERATE = float(os.getenv("DIRECTION_THRESH_MODERATE", "8"))
+DIRECTION_THRESH_HARD = float(os.getenv("DIRECTION_THRESH_HARD", "30"))
+
+
 def classify_presentation(trajectory: list[dict], station: str) -> str:
+    """Classify shot direction using parabolic trajectory fit.
+
+    Fits x = ay^2 + by + c to the origin-normalized, station-corrected
+    trajectory. Direction is the tangent angle at the y-midpoint.
+
+    Pipeline:
+      1. Origin-normalize (first point -> 0,0)
+      2. Apply station perspective correction (+/-3.5 inches)
+      3. Trim first/last points (noisy detection edges)
+      4. Outlier rejection (2-sigma residual filter, refit)
+      5. Parabolic least-squares fit
+      6. Angle = atan(dx/dy at y_mid) in degrees
+    """
     if len(trajectory) < 2:
         return "straight"
 
-    # Start with the true physical delta_x (from globally stabilized coordinates)
-    delta_x = float(trajectory[-1]["x"]) - float(trajectory[0]["x"])
-    
-    # Normalize perspective based on shooter's station
-    # Station 1/2 (Left): Target appears to travel further right than it actually is relative to trap house
-    if station == "trap-house-1-2":
-        delta_x -= 3.5
-    # Station 4/5 (Right): Target appears to travel further left than it actually is relative to trap house
-    elif station == "trap-house-4-5":
-        delta_x += 3.5
+    raw_xs = [float(p["x"]) for p in trajectory]
+    raw_ys = [float(p["y"]) for p in trajectory]
+    x0, y0 = raw_xs[0], raw_ys[0]
+    xs = [x - x0 for x in raw_xs]
+    ys = [y - y0 for y in raw_ys]
 
-    if delta_x <= -4.0:
-        return "hard_left"
-    if delta_x <= -1.5:
-        return "moderate_left"
-    if delta_x >= 4.0:
-        return "hard_right"
-    if delta_x >= 1.5:
-        return "moderate_right"
+    if station == "trap-house-1-2":
+        xs = [x - 3.5 for x in xs]
+    elif station == "trap-house-4-5":
+        xs = [x + 3.5 for x in xs]
+
+    if len(xs) > 4:
+        xs = xs[1:-1]
+        ys = ys[1:-1]
+
+    if len(xs) < 3:
+        delta_x = xs[-1] - xs[0]
+        angle_deg = math.atan2(delta_x, ys[-1] - ys[0]) * (180.0 / math.pi) if (ys[-1] - ys[0]) != 0 else 0.0
+        return _classify_angle(angle_deg)
+
+    xs_arr = np.array(xs)
+    ys_arr = np.array(ys)
+    a, b, c, r2 = _quadratic_fit(ys_arr, xs_arr)
+
+    if len(xs_arr) > 5:
+        residuals = xs_arr - (a * ys_arr**2 + b * ys_arr + c)
+        mean_r = np.mean(residuals)
+        std_r = np.std(residuals)
+        if std_r > 0.5:
+            keep = np.abs(residuals - mean_r) < 2 * std_r
+            if np.sum(keep) >= 3:
+                xs_arr = xs_arr[keep]
+                ys_arr = ys_arr[keep]
+                a, b, c, r2 = _quadratic_fit(ys_arr, xs_arr)
+
+    y_mid = (ys_arr[0] + ys_arr[-1]) / 2.0
+    slope_at_mid = 2 * a * y_mid + b
+    angle_deg = math.atan(slope_at_mid) * (180.0 / math.pi)
+
+    return _classify_angle(angle_deg)
+
+
+def _quadratic_fit(
+    y_vals: np.ndarray, x_vals: np.ndarray
+) -> tuple[float, float, float, float]:
+    """Fit x = a*y^2 + b*y + c. Returns (a, b, c, r^2)."""
+    if len(y_vals) < 3:
+        return 0.0, 0.0, 0.0, 0.0
+    A = np.column_stack([y_vals**2, y_vals, np.ones_like(y_vals)])
+    coeffs, residuals, _, _ = np.linalg.lstsq(A, x_vals, rcond=None)
+    a, b, c = coeffs
+
+    ss_res = np.sum((x_vals - A @ coeffs) ** 2)
+    ss_tot = np.sum((x_vals - np.mean(x_vals)) ** 2)
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+    return float(a), float(b), float(c), float(r2)
+
+
+def _classify_angle(angle_deg: float) -> str:
+    """Classify direction from angle (degrees from vertical). Negative = left."""
+    abs_angle = abs(angle_deg)
+    if abs_angle >= DIRECTION_THRESH_HARD:
+        return "hard_left" if angle_deg < 0 else "hard_right"
+    if abs_angle >= DIRECTION_THRESH_MODERATE:
+        return "moderate_left" if angle_deg < 0 else "moderate_right"
     return "straight"
 
 

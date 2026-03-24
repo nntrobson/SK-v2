@@ -4,11 +4,54 @@ import React, { useState, useEffect } from "react";
 import { UploadCloud, CheckCircle, Video, ChevronRight, Film, X } from "lucide-react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { upload } from "@vercel/blob/client";
 import {
   ProcessingProgressBar,
   type ProcessingPayload,
 } from "@/components/dashboard/ProcessingProgressBar";
+
+// Helper to upload a file with progress tracking
+async function uploadFileWithProgress(
+  file: File,
+  onProgress: (percent: number) => void
+): Promise<{ pathname: string; url: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const formData = new FormData();
+    formData.append("file", file);
+
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) {
+        const percent = Math.round((event.loaded / event.total) * 100);
+        onProgress(percent);
+      }
+    });
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const response = JSON.parse(xhr.responseText);
+          resolve(response);
+        } catch {
+          reject(new Error("Invalid response"));
+        }
+      } else {
+        try {
+          const error = JSON.parse(xhr.responseText);
+          reject(new Error(error.error || `Upload failed with status ${xhr.status}`));
+        } catch {
+          reject(new Error(`Upload failed with status ${xhr.status}`));
+        }
+      }
+    });
+
+    xhr.addEventListener("error", () => {
+      reject(new Error("Network error during upload"));
+    });
+
+    xhr.open("POST", "/api/videos/upload");
+    xhr.send(formData);
+  });
+}
 
 const VIDEO_ACCEPT =
   "video/mp4,video/avi,video/quicktime,video/x-msvideo,.mp4,.avi,.mov,.MOV";
@@ -113,26 +156,21 @@ export default function UploadPage() {
         ));
 
         try {
-          const blob = await upload(file.name, file, {
-            access: "public",
-            handleUploadUrl: "/api/videos/upload",
-            onUploadProgress: (progressEvent) => {
-              const percent = Math.round((progressEvent.loaded / progressEvent.total) * 100);
-              setUploadingFiles(prev => prev.map((f, idx) => 
-                idx === i ? { ...f, progress: percent } : f
-              ));
-            },
+          const result = await uploadFileWithProgress(file, (percent) => {
+            setUploadingFiles(prev => prev.map((f, idx) => 
+              idx === i ? { ...f, progress: percent } : f
+            ));
           });
 
           uploadedFileInfo.push({
             name: file.name,
-            pathname: blob.pathname,
+            pathname: result.pathname,
             size: file.size,
           });
 
           // Update status to complete
           setUploadingFiles(prev => prev.map((f, idx) => 
-            idx === i ? { ...f, status: "complete", progress: 100, pathname: blob.pathname } : f
+            idx === i ? { ...f, status: "complete", progress: 100, pathname: result.pathname } : f
           ));
         } catch (uploadError) {
           console.error(`Failed to upload ${file.name}:`, uploadError);

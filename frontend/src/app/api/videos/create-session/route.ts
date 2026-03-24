@@ -1,21 +1,18 @@
 import { createClient } from "@/lib/supabase/server";
-import { put } from "@vercel/blob";
 import { NextResponse } from "next/server";
 
 export async function POST(request: Request) {
   try {
     const supabase = await createClient();
-    
     const { data: { user } } = await supabase.auth.getUser();
-    
+
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const formData = await request.formData();
-    const files = formData.getAll("files") as File[];
+    const { files } = await request.json();
 
-    if (files.length === 0) {
+    if (!files || files.length === 0) {
       return NextResponse.json({ error: "No files provided" }, { status: 400 });
     }
 
@@ -41,21 +38,15 @@ export async function POST(request: Request) {
 
     const videoIds: number[] = [];
 
-    // Process each file
+    // Create video records for each file
     for (const file of files) {
-      // Upload to Vercel Blob (private storage)
-      const blob = await put(`videos/${user.id}/${session.id}/${file.name}`, file, {
-        access: "private",
-      });
-
-      // Create video record
       const { data: video, error: videoError } = await supabase
         .from("videos")
         .insert({
           session_id: session.id,
           user_id: user.id,
           file_name: file.name,
-          file_path: blob.pathname,
+          file_path: file.pathname,
           file_size_mb: parseFloat((file.size / 1024 / 1024).toFixed(2)),
           status: "processing",
           progress_percent: 0,
@@ -71,16 +62,16 @@ export async function POST(request: Request) {
 
       videoIds.push(video.id);
 
-      // Start simulated processing (in a real app this would trigger an actual processing pipeline)
-      simulateVideoProcessing(supabase, video.id, session.id, user.id, blob.pathname);
+      // Start simulated processing
+      simulateVideoProcessing(supabase, video.id, session.id, user.id, file.pathname);
     }
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       session_id: session.id,
-      video_ids: videoIds 
+      video_ids: videoIds,
     });
   } catch (error) {
-    console.error("Error in video upload:", error);
+    console.error("Error creating session:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
@@ -119,17 +110,17 @@ async function simulateVideoProcessing(
   }
 
   // Generate sample shots for the video
-  const numShots = Math.floor(Math.random() * 5) + 3; // 3-7 shots per video
+  const numShots = Math.floor(Math.random() * 5) + 3;
   const shots = [];
-  
+
   for (let i = 0; i < numShots; i++) {
     const isHit = Math.random() > 0.3;
     shots.push({
       video_id: videoId,
       session_id: sessionId,
       user_id: userId,
-      x: (Math.random() - 0.5) * 20, // -10 to 10
-      y: (Math.random() - 0.5) * 20 + 5, // -5 to 15 (slightly above center)
+      x: (Math.random() - 0.5) * 20,
+      y: (Math.random() - 0.5) * 20 + 5,
       type: isHit ? "hit" : "miss",
       break_label: isHit ? ["dust", "chip", "solid"][Math.floor(Math.random() * 3)] : null,
       presentation: ["straight", "hard_left", "hard_right", "moderate_left", "moderate_right"][Math.floor(Math.random() * 5)],
@@ -143,10 +134,8 @@ async function simulateVideoProcessing(
     });
   }
 
-  // Insert shots
   await supabase.from("shots").insert(shots);
 
-  // Mark video as completed
   await supabase
     .from("videos")
     .update({
@@ -156,7 +145,6 @@ async function simulateVideoProcessing(
     })
     .eq("id", videoId);
 
-  // Check if all videos in session are complete
   const { data: sessionVideos } = await supabase
     .from("videos")
     .select("status")
@@ -165,7 +153,6 @@ async function simulateVideoProcessing(
   const allComplete = sessionVideos?.every(v => v.status === "completed");
 
   if (allComplete) {
-    // Calculate session score
     const { data: sessionShots } = await supabase
       .from("shots")
       .select("type")

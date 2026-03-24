@@ -1235,21 +1235,23 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
   const presentationShotCounts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const d of shotData) {
+      if (stationFilter !== "all" && d.station !== stationFilter) continue;
       const p = d.presentation;
       c[p] = (c[p] ?? 0) + 1;
     }
     return c;
-  }, [shotData]);
+  }, [shotData, stationFilter]);
 
   const stationShotCounts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const d of shotData) {
+      if (filter !== "all" && d.presentation !== filter) continue;
       const st = d.station?.trim();
       if (!st) continue;
       c[st] = (c[st] ?? 0) + 1;
     }
     return c;
-  }, [shotData]);
+  }, [shotData, filter]);
 
   const filteredData = shotData.filter(d => 
     (filter === "all" || d.presentation === filter) &&

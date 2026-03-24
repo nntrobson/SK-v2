@@ -22,6 +22,18 @@ export interface NewClassificationResult {
   outliers: number;
 }
 
+export interface TrajectoryClassificationResult {
+  label: string;
+  angle: number;
+  headX: number;
+  headY: number;
+  tailX: number;
+  tailY: number;
+  dx: number;
+  dy: number;
+  pointsUsed: number;
+}
+
 /**
  * Least-squares fit x = a*y^2 + b*y + c via Gaussian elimination.
  */
@@ -32,8 +44,8 @@ export function quadraticFit(
   const n = yVals.length;
   if (n < 3) return { a: 0, b: 0, c: 0, r2: 0 };
 
-  let S0 = n,
-    S1 = 0,
+  const S0 = n;
+  let S1 = 0,
     S2 = 0,
     S3 = 0,
     S4 = 0;
@@ -175,6 +187,67 @@ export function classifyAngle(
   if (abs >= threshModerate)
     return angleDeg < 0 ? "moderate_left" : "moderate_right";
   return "straight";
+}
+
+/**
+ * Classify trajectory direction from the raw trajectory points — the same
+ * data that draws the trail lines on the scatter plot. Averages the first
+ * and last ~30 % of points into head/tail clusters for noise resistance,
+ * then computes a simple atan2 angle.
+ *
+ * Positive angle = right, negative = left.
+ */
+export function classifyTrajectory(
+  trajX: number[],
+  trajY: number[],
+  threshModerate: number,
+  threshHard: number
+): TrajectoryClassificationResult {
+  const empty: TrajectoryClassificationResult = {
+    label: "straight",
+    angle: 0,
+    headX: 0, headY: 0,
+    tailX: 0, tailY: 0,
+    dx: 0, dy: 0,
+    pointsUsed: 0,
+  };
+  const n = trajX.length;
+  if (n < 2) return empty;
+
+  const clusterSize = Math.max(1, Math.floor(n * 0.3));
+
+  let headX = 0, headY = 0;
+  for (let i = 0; i < clusterSize; i++) {
+    headX += trajX[i];
+    headY += trajY[i];
+  }
+  headX /= clusterSize;
+  headY /= clusterSize;
+
+  let tailX = 0, tailY = 0;
+  const tailStart = n - clusterSize;
+  for (let i = tailStart; i < n; i++) {
+    tailX += trajX[i];
+    tailY += trajY[i];
+  }
+  tailX /= clusterSize;
+  tailY /= clusterSize;
+
+  const dx = tailX - headX;
+  const dy = tailY - headY;
+  const angleDeg =
+    Math.abs(dy) > 0.001
+      ? Math.atan2(dx, dy) * (180 / Math.PI)
+      : dx > 0 ? 90 : dx < 0 ? -90 : 0;
+
+  return {
+    label: classifyAngle(angleDeg, threshModerate, threshHard),
+    angle: angleDeg,
+    headX, headY,
+    tailX, tailY,
+    dx, dy,
+    pointsUsed: n,
+  };
 }
 
 /**

@@ -1,5 +1,7 @@
+import datetime
 import logging
 import tempfile
+import time
 from pathlib import Path
 
 from app import database, models
@@ -7,6 +9,31 @@ from cv_pipeline.pipeline import analyze_video_file
 from cv_pipeline.validation_package import generate_dashboard_video
 
 logger = logging.getLogger(__name__)
+
+
+def _throttled_progress_reporter(db, video_id: int):
+    """Limit DB writes (Roboflow loop is slow; still throttle noisy callbacks)."""
+    last: list = [None, -1.0]  # time, last progress
+
+    def report(p: float, stage: str) -> None:
+        now = time.time()
+        if (
+            last[0] is not None
+            and now - last[0] < 1.25
+            and p - last[1] < 0.015
+            and p < 0.99
+        ):
+            return
+        last[0] = now
+        last[1] = p
+        v = db.query(models.Video).filter(models.Video.id == video_id).first()
+        if not v:
+            return
+        v.processing_progress = min(1.0, max(0.0, p))
+        v.processing_stage = stage
+        db.commit()
+
+    return report
 
 
 def _generate_dashboard_assets(analysis: dict, video_filepath: str) -> None:
@@ -33,13 +60,25 @@ def process_video_task(video_id: int):
     
     try:
         video.status = "processing"
+        video.processing_progress = 0.0
+        video.processing_stage = "Starting pipeline"
+        video.processing_started_at = datetime.datetime.utcnow()
         db.commit()
+
+        report = _throttled_progress_reporter(db, video_id)
 
         cache_dir = tempfile.mkdtemp(prefix=f"shotcache_{video_id}_")
         try:
-            analysis = analyze_video_file(video.filepath, cache_frames_dir=cache_dir)
+            analysis = analyze_video_file(
+                video.filepath,
+                cache_frames_dir=cache_dir,
+                progress_callback=report,
+            )
         except ValueError:
             video.status = "error_no_shots"
+            video.processing_progress = None
+            video.processing_stage = None
+            video.processing_started_at = None
             db.commit()
             return
 
@@ -71,14 +110,23 @@ def process_video_task(video_id: int):
         db.add(new_measurement)
         db.commit()
 
+        report(0.92, "Rendering preview video")
         _generate_dashboard_assets(analysis, video.filepath)
 
         video.status = "completed"
+        video.processing_progress = None
+        video.processing_stage = None
+        video.processing_started_at = None
         db.commit()
     except Exception as e:
         db.rollback()
         logger.exception("Error processing video %s: %s", video_id, e)
-        video.status = "error"
-        db.commit()
+        video = db.query(models.Video).filter(models.Video.id == video_id).first()
+        if video:
+            video.status = "error"
+            video.processing_progress = None
+            video.processing_stage = None
+            video.processing_started_at = None
+            db.commit()
     finally:
         db.close()

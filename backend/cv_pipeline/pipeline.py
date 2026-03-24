@@ -4,7 +4,7 @@ import logging
 import math
 import os
 import tempfile
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import cv2
 import numpy as np
@@ -114,66 +114,45 @@ def _compute_outlier_mask(xs: np.ndarray, ys: np.ndarray) -> np.ndarray:
 
 
 def classify_presentation(trajectory: list[dict], station: str) -> str:
-    """Classify shot direction using parabolic trajectory fit.
+    """Classify shot direction from trajectory points.
 
-    Uses stabilized global-space coordinates (gx/gy) when available so
-    the fit sees the clay's physical flight path rather than its position
-    relative to the moving crosshair.  Falls back to normalized x/y if
-    global coords are absent.
+    Uses global stabilized pixel coordinates (gx/gy) when available —
+    these trace the clay's actual flight path in the frame and match
+    the trajectory lines visible in the ShotKam video.  Falls back to
+    normalized x/y if global coords are absent.
 
-    Pipeline:
-      1. Origin-normalize (first point -> 0,0)
-      2. Apply station perspective correction (+/-3.5 px for global coords)
-      3. Outlier mask: endpoint trim + backward motion + Mahalanobis
-      4. Parabolic least-squares fit on clean points
-      5. Angle = atan(dx/dy at y_mid) in degrees
+    Y is negated for global coords (screen Y-down → Cartesian Y-up).
     """
     if len(trajectory) < 2:
         return "straight"
 
     use_global = all("gx" in p and "gy" in p for p in trajectory)
     if use_global:
-        raw_xs = [float(p["gx"]) for p in trajectory]
-        raw_ys = [float(p["gy"]) for p in trajectory]
+        xs = [float(p["gx"]) for p in trajectory]
+        ys = [-float(p["gy"]) for p in trajectory]
     else:
-        raw_xs = [float(p["x"]) for p in trajectory]
-        raw_ys = [float(p["y"]) for p in trajectory]
+        xs = [float(p["x"]) for p in trajectory]
+        ys = [float(p["y"]) for p in trajectory]
 
-    x0, y0 = raw_xs[0], raw_ys[0]
-    xs_list = [x - x0 for x in raw_xs]
-    ys_list = [y - y0 for y in raw_ys]
+    n = len(xs)
+    cluster_size = max(1, int(n * 0.3))
 
-    if not use_global:
-        if station == "trap-house-1-2":
-            xs_list = [x - 3.5 for x in xs_list]
-        elif station == "trap-house-4-5":
-            xs_list = [x + 3.5 for x in xs_list]
+    head_x = sum(xs[:cluster_size]) / cluster_size
+    head_y = sum(ys[:cluster_size]) / cluster_size
+    tail_x = sum(xs[n - cluster_size:]) / cluster_size
+    tail_y = sum(ys[n - cluster_size:]) / cluster_size
 
-    xs_all = np.array(xs_list)
-    ys_all = np.array(ys_list)
+    dx = tail_x - head_x
+    dy = tail_y - head_y
 
-    mask = _compute_outlier_mask(xs_all, ys_all)
-    xs_clean = xs_all[~mask]
-    ys_clean = ys_all[~mask]
-
-    if len(xs_clean) < 3:
-        # Not enough clean points — fall back to all points
-        a, b, c, r2 = _quadratic_fit(ys_all, xs_all)
-        if len(ys_all) < 3:
-            delta_x = float(xs_all[-1] - xs_all[0])
-            dy = float(ys_all[-1] - ys_all[0])
-            angle_deg = math.atan2(delta_x, dy) * (180.0 / math.pi) if dy != 0 else 0.0
-            return _classify_angle(angle_deg)
-        y_mid = (ys_all[0] + ys_all[-1]) / 2.0
-        slope_at_mid = 2 * a * y_mid + b
-        angle_deg = math.atan(slope_at_mid) * (180.0 / math.pi)
-        return _classify_angle(angle_deg)
-
-    a, b, c, r2 = _quadratic_fit(ys_clean, xs_clean)
-
-    y_mid = (ys_clean[0] + ys_clean[-1]) / 2.0
-    slope_at_mid = 2 * a * y_mid + b
-    angle_deg = math.atan(slope_at_mid) * (180.0 / math.pi)
+    if abs(dy) > 0.001:
+        angle_deg = math.atan2(dx, dy) * (180.0 / math.pi)
+    elif dx > 0:
+        angle_deg = 90.0
+    elif dx < 0:
+        angle_deg = -90.0
+    else:
+        angle_deg = 0.0
 
     return _classify_angle(angle_deg)
 
@@ -270,6 +249,7 @@ def analyze_video_file(
     version: Optional[str] = None,
     frame_stride: Optional[int] = None,
     cache_frames_dir: Optional[str] = None,
+    progress_callback: Optional[Callable[[float, str], None]] = None,
 ) -> Dict[str, Any]:
     audio_data, sample_rate = extract_audio_track(video_path)
     shot_times = detect_gunshot_onset(audio_data, sample_rate=sample_rate or 44100) if audio_data is not None else []
@@ -322,6 +302,14 @@ def analyze_video_file(
         if not ret:
             break
 
+        if progress_callback:
+            if total_frames and total_frames > 0:
+                pct = min(0.85, (frame_idx / float(total_frames)) * 0.85)
+            else:
+                # CAP_PROP_FRAME_COUNT is sometimes 0 — creep toward 80% by frame index
+                pct = min(0.80, frame_idx / 60000.0)
+            progress_callback(pct, "Analyzing frames")
+
         if cache_frames_dir:
             cache_path = os.path.join(cache_frames_dir, f"frame_{frame_idx:06d}.jpg")
             cv2.imwrite(cache_path, frame)
@@ -353,6 +341,9 @@ def analyze_video_file(
         )
         frame_idx += 1
     cap.release()
+
+    if progress_callback:
+        progress_callback(0.88, "Scoring shot & trajectory")
 
     station, station_confidence = aggregate_station_label(frame_analysis)
     pretrigger_summary = build_pretrigger_track(

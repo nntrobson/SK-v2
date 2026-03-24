@@ -2,6 +2,7 @@ import React from "react";
 import { HeroBanner } from "@/components/dashboard/HeroBanner";
 import { StatCard } from "@/components/dashboard/StatCard";
 import PerformanceChart from "@/components/dashboard/PerformanceChart";
+import { UseCasesGrid } from "@/components/dashboard/UseCasesGrid";
 
 const TREND_DATA = [
   { month: 'Jan', average: 18 },
@@ -21,6 +22,9 @@ export default async function DashboardOverviewLayout() {
         
         <PerformanceChart delay={0.2} data={TREND_DATA} />
       </div>
+
+      {/* Embedded Marketing & Use Cases */}
+      <UseCasesGrid />
     </div>
   );
 }

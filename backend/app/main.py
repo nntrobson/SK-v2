@@ -1,7 +1,8 @@
+import datetime
 import os
 from typing import Optional
 
-from fastapi import FastAPI, Depends
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -18,6 +19,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def _processing_eta_seconds(
+    started_at: Optional[datetime.datetime], progress: Optional[float]
+) -> Optional[int]:
+    if started_at is None or progress is None or progress < 0.03:
+        return None
+    if progress <= 0 or progress >= 1:
+        return None
+    elapsed = (datetime.datetime.utcnow() - started_at).total_seconds()
+    return int(max(0, round(elapsed * (1.0 / progress - 1.0))))
+
+
+def _video_processing_payload(video: models.Video) -> dict:
+    if video.status == "completed":
+        return {
+            "video_id": video.id,
+            "status": video.status,
+            "progress": 1.0,
+            "progress_percent": 100.0,
+            "stage": "Complete",
+            "eta_seconds": None,
+        }
+    if video.status == "error":
+        return {
+            "video_id": video.id,
+            "status": video.status,
+            "progress": None,
+            "progress_percent": None,
+            "stage": "Processing failed",
+            "eta_seconds": None,
+        }
+    if video.status == "error_no_shots":
+        return {
+            "video_id": video.id,
+            "status": video.status,
+            "progress": None,
+            "progress_percent": None,
+            "stage": "No shot detected",
+            "eta_seconds": None,
+        }
+    pct = video.processing_progress
+    return {
+        "video_id": video.id,
+        "status": video.status,
+        "progress": pct,
+        "progress_percent": None if pct is None else round(pct * 100.0, 1),
+        "stage": video.processing_stage,
+        "eta_seconds": _processing_eta_seconds(video.processing_started_at, pct),
+    }
+
+
 @app.get("/api/sessions")
 def get_sessions(db: Session = Depends(database.get_db)):
     sessions = db.query(models.Session).all()
@@ -27,30 +79,51 @@ def get_sessions(db: Session = Depends(database.get_db)):
         total_shots = 0
         hits = 0
         session_status = "completed"
-        
+        processing_candidates: list[models.Video] = []
+
         for r in rounds:
             videos = db.query(models.Video).filter(models.Video.round_id == r.id).all()
             for v in videos:
                 if v.status in ["pending", "processing"]:
                     session_status = "processing"
+                    processing_candidates.append(v)
                 elif v.status == "error" and session_status != "processing":
                     session_status = "error"
-                
+
                 shots = db.query(models.Shot).filter(models.Shot.video_id == v.id).all()
                 total_shots += len(shots)
                 hits += sum(1 for shot in shots if shot.break_label == "break")
-        
-        # MOCK_SESSIONS expected format
-        res.append({
+
+        progress_row: Optional[dict] = None
+        if session_status == "processing" and processing_candidates:
+            best = max(
+                processing_candidates,
+                key=lambda x: (x.processing_progress is not None, x.processing_progress or 0.0),
+            )
+            progress_row = _video_processing_payload(best)
+
+        row = {
             "id": s.id,
             "date": s.date.strftime("%b %d, %Y") if hasattr(s.date, "strftime") else str(s.date),
             "venue": s.metadata_json.get("venue", "Unknown") if s.metadata_json else "Unknown",
             "type": rounds[0].type if rounds else "Unknown",
             "score": hits,
             "total": total_shots,
-            "status": session_status
-        })
+            "status": session_status,
+        }
+        if progress_row:
+            row["processing"] = progress_row
+        res.append(row)
     return res
+
+
+@app.get("/api/videos/{video_id}/processing-status")
+def get_video_processing_status(video_id: int, db: Session = Depends(database.get_db)):
+    v = db.query(models.Video).filter(models.Video.id == video_id).first()
+    if not v:
+        raise HTTPException(status_code=404, detail="Video not found")
+    return _video_processing_payload(v)
+
 
 @app.get("/api/shots")
 def get_all_shots(db: Session = Depends(database.get_db)):
@@ -122,11 +195,76 @@ def patch_shot_classification(shot_id: int, body: ShotClassificationUpdate, db: 
     meas = db.query(models.ShotMeasurement).filter(models.ShotMeasurement.shot_id == shot.id).first()
     return serialize_session_shot(shot=shot, measurement=meas, video=video)
 
+
+class ReclassifyRequest(BaseModel):
+    thresh_moderate: float = 8.0
+    thresh_hard: float = 30.0
+
+
+@app.post("/api/shots/reclassify")
+def reclassify_all_shots(body: ReclassifyRequest, db: Session = Depends(database.get_db)):
+    """Reclassify every shot's presentation using the head/tail trajectory
+    angle method with the provided thresholds, and persist the results."""
+    import math
+
+    shots = db.query(models.Shot).all()
+    updated = 0
+
+    for shot in shots:
+        meas = db.query(models.ShotMeasurement).filter(
+            models.ShotMeasurement.shot_id == shot.id
+        ).first()
+        if not meas or not meas.trajectory or len(meas.trajectory) < 2:
+            continue
+
+        traj = meas.trajectory
+        use_global = all("gx" in p and "gy" in p for p in traj)
+        if use_global:
+            xs = [float(p["gx"]) for p in traj]
+            ys = [-float(p["gy"]) for p in traj]
+        else:
+            xs = [float(p["x"]) for p in traj]
+            ys = [float(p["y"]) for p in traj]
+
+        n = len(xs)
+        cluster_size = max(1, int(n * 0.3))
+        head_x = sum(xs[:cluster_size]) / cluster_size
+        head_y = sum(ys[:cluster_size]) / cluster_size
+        tail_x = sum(xs[n - cluster_size:]) / cluster_size
+        tail_y = sum(ys[n - cluster_size:]) / cluster_size
+
+        dx = tail_x - head_x
+        dy = tail_y - head_y
+
+        if abs(dy) > 0.001:
+            angle = math.atan2(dx, dy) * (180.0 / math.pi)
+        elif dx > 0:
+            angle = 90.0
+        elif dx < 0:
+            angle = -90.0
+        else:
+            angle = 0.0
+
+        abs_angle = abs(angle)
+        if abs_angle >= body.thresh_hard:
+            label = "hard_left" if angle < 0 else "hard_right"
+        elif abs_angle >= body.thresh_moderate:
+            label = "moderate_left" if angle < 0 else "moderate_right"
+        else:
+            label = "straight"
+
+        if shot.presentation != label:
+            shot.presentation = label
+            updated += 1
+
+    db.commit()
+    return {"updated": updated, "total": len(shots)}
+
+
 import os
 import cv2
 import uuid
 import shutil
-import datetime
 from fastapi import File, UploadFile, BackgroundTasks
 from fastapi.responses import FileResponse, Response
 

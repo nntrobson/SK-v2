@@ -39,7 +39,10 @@ class Video(Base):
     round_id = Column(Integer, ForeignKey("rounds.id"))
     filepath = Column(String, nullable=False)
     status = Column(String, default="uploaded") # processing, done, error
-    
+    processing_progress = Column(Float, nullable=True)  # 0.0–1.0 while processing
+    processing_stage = Column(String, nullable=True)
+    processing_started_at = Column(DateTime, nullable=True)
+
     round = relationship("Round", back_populates="videos")
     shots = relationship("Shot", back_populates="video")
 

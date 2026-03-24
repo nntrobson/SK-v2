@@ -4,6 +4,10 @@ import Link from "next/link";
 import React, { useState, useEffect } from "react";
 import { motion, type Variants } from "framer-motion";
 import { Calendar, MapPin, ChevronRight, Activity, Plus } from "lucide-react";
+import {
+  ProcessingProgressBar,
+  type ProcessingPayload,
+} from "@/components/dashboard/ProcessingProgressBar";
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -23,6 +27,7 @@ interface SessionData {
   score: number;
   total: number;
   status: string;
+  processing?: ProcessingPayload;
 }
 
 export default function SessionsPage() {
@@ -31,17 +36,30 @@ export default function SessionsPage() {
   const [groupBy, setGroupBy] = useState<"date" | "venue" | "type">("date");
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/sessions')
-      .then(res => res.json())
-      .then(data => {
+    fetch("http://localhost:8000/api/sessions")
+      .then((res) => res.json())
+      .then((data) => {
         setSessions(data);
         setLoading(false);
       })
-      .catch(err => {
+      .catch((err) => {
         console.error(err);
         setLoading(false);
       });
   }, []);
+
+  const hasProcessing = sessions.some((s) => s.status === "processing");
+
+  useEffect(() => {
+    if (!hasProcessing) return;
+    const id = setInterval(() => {
+      fetch("http://localhost:8000/api/sessions")
+        .then((res) => res.json())
+        .then((data) => setSessions(data))
+        .catch(console.error);
+    }, 2000);
+    return () => clearInterval(id);
+  }, [hasProcessing]);
   const groupedSessions = sessions.reduce((acc, session) => {
     const key = session[groupBy] || "Unknown";
     if (!acc[key]) {
@@ -160,11 +178,17 @@ export default function SessionsPage() {
                             </div>
                           </td>
                           <td className="px-8 py-6">
-                            {session.status === 'processing' ? (
-                              <div className="flex items-center gap-3">
-                                <div className="w-5 h-5 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin" />
-                                <span className="text-sky-400 font-medium italic animate-pulse tracking-wide text-sm">Processing Video...</span>
-                              </div>
+                            {session.status === "processing" ? (
+                              session.processing ? (
+                                <ProcessingProgressBar processing={session.processing} compact />
+                              ) : (
+                                <div className="flex items-center gap-3">
+                                  <div className="w-5 h-5 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin" />
+                                  <span className="text-sky-400 font-medium italic animate-pulse tracking-wide text-sm">
+                                    Processing video…
+                                  </span>
+                                </div>
+                              )
                             ) : (
                               <div className="flex items-center gap-2">
                                 <Activity className={`w-4 h-4 ${session.score >= 23 ? 'text-emerald-400' : 'text-amber-400'}`} />

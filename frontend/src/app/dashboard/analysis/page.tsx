@@ -5,12 +5,11 @@ import { motion } from "framer-motion";
 import { Activity, Download, SlidersHorizontal, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  classifyOld,
-  classifyNew,
+  classifyTrajectory,
   autoDetectThresholds,
   CLASS_COLORS,
   DIRECTION_LABELS,
-  type NewClassificationResult,
+  type TrajectoryClassificationResult,
 } from "@/lib/trajectory-classifier";
 import TrajectoryCanvas, {
   type TrajectoryShot,
@@ -23,7 +22,7 @@ interface ApiShot {
   station: string | null;
   presentation: string;
   break_label: string | null;
-  trajectory: Array<{ x: number; y: number }>;
+  trajectory: Array<{ x: number; y: number; gx?: number; gy?: number }>;
 }
 
 interface ProcessedShot {
@@ -31,13 +30,10 @@ interface ProcessedShot {
   id: number;
   videoName: string;
   station: string;
-  trajectory: Array<{ x: number; y: number }>;
+  storedPresentation: string;
   trajX: number[];
   trajY: number[];
-  normX: number[];
-  oldLabel: string;
-  oldDeltaX: number;
-  newResult: NewClassificationResult;
+  result: TrajectoryClassificationResult;
   agree: boolean;
 }
 
@@ -70,20 +66,28 @@ export default function AnalysisPage() {
   const [filterMode, setFilterMode] = useState("all");
   const [stationFilter, setStationFilter] = useState("all");
   const [directionFilter, setDirectionFilter] = useState("all");
-  const [showOutliers, setShowOutliers] = useState(true);
   const [showTuning, setShowTuning] = useState(false);
-  const [threshModerate, setThreshModerate] = useState(8);
-  const [threshHard, setThreshHard] = useState(30);
-  const [userLabels, setUserLabels] = useState<Record<string, string>>({});
-
-  useEffect(() => {
+  const [threshModerate, setThreshModerate] = useState(() => {
+    if (typeof window === "undefined") return 8;
+    const v = localStorage.getItem("trajThreshModerate");
+    return v ? Number(v) : 8;
+  });
+  const [threshHard, setThreshHard] = useState(() => {
+    if (typeof window === "undefined") return 30;
+    const v = localStorage.getItem("trajThreshHard");
+    return v ? Number(v) : 30;
+  });
+  const [saving, setSaving] = useState(false);
+  const [saveResult, setSaveResult] = useState<string | null>(null);
+  const [userLabels, setUserLabels] = useState<Record<string, string>>(() => {
+    if (typeof window === "undefined") return {};
     try {
       const saved = localStorage.getItem("trajectoryLabels");
-      if (saved) setUserLabels(JSON.parse(saved));
+      return saved ? (JSON.parse(saved) as Record<string, string>) : {};
     } catch {
-      /* ignore */
+      return {};
     }
-  }, []);
+  });
 
   useEffect(() => {
     fetch("http://localhost:8000/api/shots")
@@ -99,27 +103,26 @@ export default function AnalysisPage() {
     return apiShots
       .filter((s) => s.trajectory && s.trajectory.length >= 2)
       .map((s, i) => {
-        const trajX = s.trajectory.map((p) => p.x);
-        const trajY = s.trajectory.map((p) => p.y);
+        const hasGlobal = s.trajectory.every(
+          (p) => p.gx != null && p.gy != null
+        );
+
+        let trajX: number[];
+        let trajY: number[];
+        if (hasGlobal) {
+          trajX = s.trajectory.map((p) => p.gx!);
+          trajY = s.trajectory.map((p) => -p.gy!);
+        } else {
+          trajX = s.trajectory.map((p) => p.x);
+          trajY = s.trajectory.map((p) => p.y);
+        }
+
         const station = s.station || "unknown";
+        const storedPresentation = (s.presentation || "straight").toLowerCase();
 
-        // Station-corrected normalized X
-        const normX = trajX.map((x) => {
-          if (station === "trap-house-1-2") return x - 3.5;
-          if (station === "trap-house-4-5") return x + 3.5;
-          return x;
-        });
-
-        const oldResult = classifyOld(normX, station);
-
-        // Origin-normalize for parabolic classification
-        const x0 = normX[0] || 0,
-          y0 = trajY[0] || 0;
-        const normXOrigin = normX.map((x) => x - x0);
-        const normYOrigin = trajY.map((y) => y - y0);
-        const newResult = classifyNew(
-          normXOrigin,
-          normYOrigin,
+        const result = classifyTrajectory(
+          trajX,
+          trajY,
           threshModerate,
           threshHard
         );
@@ -129,27 +132,55 @@ export default function AnalysisPage() {
           id: s.id,
           videoName: s.video_name,
           station,
-          trajectory: s.trajectory,
+          storedPresentation,
           trajX,
           trajY,
-          normX,
-          oldLabel: oldResult.label,
-          oldDeltaX: oldResult.deltaX,
-          newResult,
-          agree: oldResult.label === newResult.label,
+          result,
+          agree: storedPresentation === result.label,
         };
       });
   }, [apiShots, threshModerate, threshHard]);
 
-  // Auto-detect thresholds on first load
   useEffect(() => {
-    if (shots.length > 4) {
-      const angles = shots.map((s) => s.newResult.angle);
-      const [mod, hard] = autoDetectThresholds(angles);
+    if (shots.length <= 4) return;
+    const hasSaved =
+      typeof window !== "undefined" &&
+      (localStorage.getItem("trajThreshModerate") !== null ||
+        localStorage.getItem("trajThreshHard") !== null);
+    if (hasSaved) return;
+    const angles = shots.map((s) => s.result.angle);
+    const [mod, hard] = autoDetectThresholds(angles);
+    queueMicrotask(() => {
       setThreshModerate(mod);
       setThreshHard(hard);
-    }
+    });
   }, [apiShots.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-sync: whenever computed classifications differ from DB, push to DB.
+  // Debounced so slider drags don't spam the endpoint.
+  useEffect(() => {
+    if (shots.length === 0) return;
+    const hasDiffs = shots.some((s) => !s.agree);
+    if (!hasDiffs) return;
+
+    const timer = setTimeout(() => {
+      setSaving(true);
+      fetch("http://localhost:8000/api/shots/reclassify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          thresh_moderate: threshModerate,
+          thresh_hard: threshHard,
+        }),
+      })
+        .then(() => fetch("http://localhost:8000/api/shots"))
+        .then((r) => r.json())
+        .then((data: ApiShot[]) => setApiShots(data))
+        .finally(() => setSaving(false));
+    }, 600);
+
+    return () => clearTimeout(timer);
+  }, [threshModerate, threshHard, shots]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const stations = useMemo(() => {
     const set = new Set(shots.map((s) => s.station));
@@ -159,7 +190,7 @@ export default function AnalysisPage() {
   const filteredShots = useMemo(() => {
     return shots.filter((s) => {
       if (stationFilter !== "all" && s.station !== stationFilter) return false;
-      if (directionFilter !== "all" && s.newResult.label !== directionFilter)
+      if (directionFilter !== "all" && s.result.label !== directionFilter)
         return false;
       if (filterMode === "differ") return !s.agree;
       if (filterMode === "unclassified") return !userLabels[s.videoName];
@@ -176,7 +207,7 @@ export default function AnalysisPage() {
   const userCount = Object.keys(userLabels).length;
 
   const allAngles = useMemo(
-    () => shots.map((s) => s.newResult.angle),
+    () => shots.map((s) => s.result.angle),
     [shots]
   );
 
@@ -242,11 +273,11 @@ export default function AnalysisPage() {
   );
 
   const exportCSV = useCallback(() => {
-    const header = "video_name,station,old_label,old_delta_x,new_label,new_angle,r2,user_label\n";
+    const header = "video_name,station,stored_presentation,computed_label,angle,points,user_label\n";
     const rows = shots
       .map(
         (s) =>
-          `${s.videoName},${s.station},${s.oldLabel},${s.oldDeltaX.toFixed(2)},${s.newResult.label},${s.newResult.angle.toFixed(2)},${s.newResult.r2.toFixed(4)},${userLabels[s.videoName] || ""}`
+          `${s.videoName},${s.station},${s.storedPresentation},${s.result.label},${s.result.angle.toFixed(2)},${s.result.pointsUsed},${userLabels[s.videoName] || ""}`
       )
       .join("\n");
     const blob = new Blob([header + rows], { type: "text/csv" });
@@ -257,6 +288,41 @@ export default function AnalysisPage() {
     a.click();
     URL.revokeObjectURL(url);
   }, [shots, userLabels]);
+
+  const updateThreshModerate = useCallback((v: number) => {
+    setThreshModerate(v);
+    localStorage.setItem("trajThreshModerate", String(v));
+  }, []);
+
+  const updateThreshHard = useCallback((v: number) => {
+    setThreshHard(v);
+    localStorage.setItem("trajThreshHard", String(v));
+  }, []);
+
+  const saveClassifications = useCallback(async () => {
+    setSaving(true);
+    setSaveResult(null);
+    try {
+      const res = await fetch("http://localhost:8000/api/shots/reclassify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          thresh_moderate: threshModerate,
+          thresh_hard: threshHard,
+        }),
+      });
+      const data = await res.json();
+      setSaveResult(`Updated ${data.updated} of ${data.total} shots`);
+
+      const refreshRes = await fetch("http://localhost:8000/api/shots");
+      const refreshData: ApiShot[] = await refreshRes.json();
+      setApiShots(refreshData);
+    } catch {
+      setSaveResult("Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }, [threshModerate, threshHard]);
 
   const exportUserLabels = useCallback(() => {
     const blob = new Blob([JSON.stringify(userLabels, null, 2)], {
@@ -270,7 +336,6 @@ export default function AnalysisPage() {
     URL.revokeObjectURL(url);
   }, [userLabels]);
 
-  // Build overlay TrajectoryShots
   const overlayTrajectoryShots = useMemo<TrajectoryShot[]>(() => {
     if (multiSelected.size === 0) return [];
     return [...multiSelected]
@@ -280,9 +345,7 @@ export default function AnalysisPage() {
         videoName: s.videoName,
         trajX: s.trajX,
         trajY: s.trajY,
-        normX: s.normX,
-        newResult: s.newResult,
-        oldDeltaX: s.oldDeltaX,
+        result: s.result,
       }));
   }, [multiSelected, filteredShots]);
 
@@ -292,9 +355,7 @@ export default function AnalysisPage() {
       videoName: selectedShot.videoName,
       trajX: selectedShot.trajX,
       trajY: selectedShot.trajY,
-      normX: selectedShot.normX,
-      newResult: selectedShot.newResult,
-      oldDeltaX: selectedShot.oldDeltaX,
+      result: selectedShot.result,
     };
   }, [selectedShot]);
 
@@ -316,7 +377,7 @@ export default function AnalysisPage() {
       <div className="flex items-center gap-5 px-5 py-3 glass-panel rounded-xl mb-3 border border-slate-700/50">
         <Activity className="w-5 h-5 text-cyan-400" />
         <h1 className="text-lg font-bold text-white tracking-tight">
-          Trajectory Direction Validator
+          Trajectory Direction Classifier
         </h1>
         <div className="text-xs text-slate-400 flex gap-3">
           <span>
@@ -324,7 +385,7 @@ export default function AnalysisPage() {
             shots
           </span>
           <span>
-            Agree:{" "}
+            Match DB:{" "}
             <span className="text-cyan-400 font-semibold">{agreeCount}</span>
           </span>
           <span>
@@ -335,6 +396,11 @@ export default function AnalysisPage() {
             Labeled:{" "}
             <span className="text-cyan-400 font-semibold">{userCount}</span>
           </span>
+          {saving && (
+            <span className="text-[10px] text-cyan-400 animate-pulse">
+              Syncing to DB...
+            </span>
+          )}
         </div>
       </div>
 
@@ -351,7 +417,7 @@ export default function AnalysisPage() {
           className="bg-slate-800 border border-slate-700 text-slate-200 text-xs px-2 py-1.5 rounded-lg"
         >
           <option value="all">All shots</option>
-          <option value="differ">Old != New only</option>
+          <option value="differ">Differs from DB</option>
           <option value="unclassified">Not yet labeled</option>
           <option value="classified">User labeled</option>
         </select>
@@ -426,16 +492,6 @@ export default function AnalysisPage() {
           <SlidersHorizontal className="w-3 h-3" /> Tuning
         </button>
 
-        <label className="text-xs text-slate-400 flex items-center gap-1.5 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={showOutliers}
-            onChange={(e) => setShowOutliers(e.target.checked)}
-            className="accent-cyan-400"
-          />
-          Show outliers
-        </label>
-
         <span className="text-[10px] text-slate-600 ml-2">
           Cmd/Ctrl+click to overlay, Shift+click to range-select
         </span>
@@ -461,7 +517,7 @@ export default function AnalysisPage() {
                   min={15}
                   max={60}
                   value={threshHard}
-                  onChange={(e) => setThreshHard(Number(e.target.value))}
+                  onChange={(e) => updateThreshHard(Number(e.target.value))}
                   className="flex-1 accent-cyan-400"
                 />
                 <span className="w-8 text-right text-cyan-400 font-mono font-semibold">
@@ -475,7 +531,7 @@ export default function AnalysisPage() {
                   min={2}
                   max={30}
                   value={threshModerate}
-                  onChange={(e) => setThreshModerate(Number(e.target.value))}
+                  onChange={(e) => updateThreshModerate(Number(e.target.value))}
                   className="flex-1 accent-cyan-400"
                 />
                 <span className="w-8 text-right text-cyan-400 font-mono font-semibold">
@@ -504,7 +560,7 @@ export default function AnalysisPage() {
               <div>
                 Straight:{" "}
                 <span className="text-cyan-400 font-semibold">
-                  {shots.filter((s) => s.newResult.label === "straight").length}
+                  {shots.filter((s) => s.result.label === "straight").length}
                 </span>
               </div>
               <div>
@@ -513,8 +569,8 @@ export default function AnalysisPage() {
                   {
                     shots.filter(
                       (s) =>
-                        s.newResult.label === "moderate_left" ||
-                        s.newResult.label === "moderate_right"
+                        s.result.label === "moderate_left" ||
+                        s.result.label === "moderate_right"
                     ).length
                   }
                 </span>
@@ -525,12 +581,34 @@ export default function AnalysisPage() {
                   {
                     shots.filter(
                       (s) =>
-                        s.newResult.label === "hard_left" ||
-                        s.newResult.label === "hard_right"
+                        s.result.label === "hard_left" ||
+                        s.result.label === "hard_right"
                     ).length
                   }
                 </span>
               </div>
+            </div>
+            <div className="min-w-[200px] flex flex-col gap-2 items-start">
+              <button
+                onClick={saveClassifications}
+                disabled={saving}
+                className={cn(
+                  "px-4 py-2 rounded-lg text-xs font-semibold transition-colors flex items-center gap-2",
+                  saving
+                    ? "bg-slate-700 text-slate-400 cursor-wait"
+                    : "bg-cyan-600 text-white hover:bg-cyan-500"
+                )}
+              >
+                {saving ? "Saving..." : "Save to All Sessions"}
+              </button>
+              <p className="text-[10px] text-slate-600">
+                Reclassifies every shot with current thresholds and saves to the database.
+              </p>
+              {saveResult && (
+                <span className="text-[11px] text-emerald-400 font-semibold">
+                  {saveResult}
+                </span>
+              )}
             </div>
           </div>
         </motion.div>
@@ -562,7 +640,7 @@ export default function AnalysisPage() {
               >
                 {isMulti && (
                   <span
-                    style={{ color: CLASS_COLORS[shot.newResult.label] || "#888" }}
+                    style={{ color: CLASS_COLORS[shot.result.label] || "#888" }}
                     className="text-base leading-none"
                   >
                     ●
@@ -602,21 +680,20 @@ export default function AnalysisPage() {
                     key={s.videoName}
                     className="glass-panel rounded-lg p-3 border border-slate-700/50 text-xs"
                     style={{
-                      borderColor: CLASS_COLORS[s.newResult.label] || "#888",
+                      borderColor: CLASS_COLORS[s.result.label] || "#888",
                     }}
                   >
                     <div
                       className="font-semibold mb-1"
                       style={{
-                        color: CLASS_COLORS[s.newResult.label] || "#888",
+                        color: CLASS_COLORS[s.result.label] || "#888",
                       }}
                     >
                       {s.videoName.replace(".MP4", "")}
                     </div>
                     <div className="text-slate-500">
-                      <DirectionBadge label={s.newResult.label} />{" "}
-                      {s.newResult.angle.toFixed(1)}° R²=
-                      {s.newResult.r2.toFixed(3)}
+                      <DirectionBadge label={s.result.label} />{" "}
+                      {s.result.angle.toFixed(1)}°
                     </div>
                   </div>
                 ))}
@@ -627,23 +704,26 @@ export default function AnalysisPage() {
             <>
               {/* Classification Cards */}
               <div className="flex gap-3">
-                <div className="flex-1 glass-panel rounded-xl border-2 border-slate-600/50 p-4 text-center">
-                  <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-2">
-                    Old Method (endpoint delta)
-                  </div>
-                  <DirectionBadge label={selectedShot.oldLabel} />
-                  <div className="text-[11px] text-slate-500 mt-2">
-                    delta_x = {selectedShot.oldDeltaX.toFixed(1)} in
-                  </div>
-                </div>
                 <div className="flex-1 glass-panel rounded-xl border-2 border-cyan-500/40 p-4 text-center">
                   <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-2">
-                    New Method (parabolic fit)
+                    Trajectory Direction
                   </div>
-                  <DirectionBadge label={selectedShot.newResult.label} />
+                  <DirectionBadge label={selectedShot.result.label} />
                   <div className="text-[11px] text-slate-500 mt-2">
-                    angle = {selectedShot.newResult.angle.toFixed(1)}° | R² ={" "}
-                    {selectedShot.newResult.r2.toFixed(3)}
+                    {selectedShot.result.angle.toFixed(1)}° from vertical
+                  </div>
+                </div>
+                <div className="flex-1 glass-panel rounded-xl border-2 border-slate-600/50 p-4 text-center">
+                  <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-2">
+                    Stored in DB
+                  </div>
+                  <DirectionBadge label={selectedShot.storedPresentation} />
+                  <div className="text-[11px] text-slate-500 mt-2">
+                    {selectedShot.agree ? (
+                      <span className="text-emerald-400">Matches</span>
+                    ) : (
+                      <span className="text-amber-400">Different</span>
+                    )}
                   </div>
                 </div>
                 <div className="flex-1 glass-panel rounded-xl border-2 border-violet-500/40 p-4 text-center">
@@ -658,12 +738,9 @@ export default function AnalysisPage() {
                   <div className="text-[11px] text-slate-500 mt-2">
                     {userLabels[selectedShot.videoName]
                       ? userLabels[selectedShot.videoName] ===
-                        selectedShot.newResult.label
-                        ? "Matches NEW"
-                        : userLabels[selectedShot.videoName] ===
-                            selectedShot.oldLabel
-                          ? "Matches OLD"
-                          : "Matches neither"
+                        selectedShot.result.label
+                        ? "Matches trajectory"
+                        : "Differs from trajectory"
                       : "Click below to classify"}
                   </div>
                 </div>
@@ -673,12 +750,9 @@ export default function AnalysisPage() {
               <div className="glass-panel rounded-xl border border-slate-700/50 p-5">
                 <h3 className="text-sm text-slate-400 mb-3 flex items-center gap-2">
                   <Info className="w-4 h-4" /> Trajectory Plot
-                  (origin-normalized, inches)
+                  (origin-normalized)
                 </h3>
-                <TrajectoryCanvas
-                  shot={selectedTrajectoryShot}
-                  showOutliers={showOutliers}
-                />
+                <TrajectoryCanvas shot={selectedTrajectoryShot} />
               </div>
 
               {/* Info Grid */}
@@ -692,7 +766,7 @@ export default function AnalysisPage() {
                   </div>
                   <div className="text-xs text-slate-500 mt-1">
                     Station: {selectedShot.station} | Points:{" "}
-                    {selectedShot.trajectory.length}
+                    {selectedShot.result.pointsUsed}
                   </div>
                 </div>
                 <div className="glass-panel rounded-xl border border-slate-700/50 p-4">
@@ -701,26 +775,16 @@ export default function AnalysisPage() {
                   </div>
                   <div className="text-xs text-slate-400 space-y-0.5">
                     <div>
-                      Endpoint delta (norm): {selectedShot.oldDeltaX.toFixed(1)}{" "}
-                      in
+                      Direction angle: {selectedShot.result.angle.toFixed(1)}°
                     </div>
                     <div>
-                      Quadratic: x ={" "}
-                      {selectedShot.newResult.a.toFixed(5)}y² +{" "}
-                      {selectedShot.newResult.b.toFixed(3)}y +{" "}
-                      {selectedShot.newResult.c.toFixed(2)}
+                      Horizontal delta: {selectedShot.result.dx.toFixed(1)} px
                     </div>
                     <div>
-                      Tangent slope at midpoint:{" "}
-                      {selectedShot.newResult.slopeAtMid.toFixed(4)}
+                      Vertical delta: {selectedShot.result.dy.toFixed(1)} px
                     </div>
                     <div>
-                      Angle: {selectedShot.newResult.angle.toFixed(1)}° | R²:{" "}
-                      {selectedShot.newResult.r2.toFixed(4)}
-                    </div>
-                    <div>
-                      Points used: {selectedShot.newResult.trimmedN} (
-                      {selectedShot.newResult.outliers} outliers removed)
+                      Points used: {selectedShot.result.pointsUsed}
                     </div>
                   </div>
                 </div>
@@ -776,12 +840,12 @@ export default function AnalysisPage() {
               {/* Distribution Summary */}
               <div className="glass-panel rounded-xl border border-slate-700/50 p-4">
                 <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-3">
-                  Classification Distribution (New Method)
+                  Classification Distribution
                 </div>
                 <div className="grid grid-cols-5 gap-2">
                   {DIRECTION_LABELS.map((d) => {
                     const count = shots.filter(
-                      (s) => s.newResult.label === d
+                      (s) => s.result.label === d
                     ).length;
                     return (
                       <div

@@ -1,14 +1,58 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { UploadCloud, CheckCircle, Video, ChevronRight } from "lucide-react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
+import {
+  ProcessingProgressBar,
+  type ProcessingPayload,
+} from "@/components/dashboard/ProcessingProgressBar";
+import { getApiBaseUrl } from "@/lib/api-base";
+
+const API = getApiBaseUrl();
+
+const VIDEO_ACCEPT =
+  "video/mp4,video/avi,video/quicktime,video/x-msvideo,.mp4,.avi,.mov,.MOV";
 
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [videoId, setVideoId] = useState<number | null>(null);
+  const [processing, setProcessing] = useState<ProcessingPayload | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+
+  useEffect(() => {
+    if (!success || videoId == null) return;
+
+    const idRef: { current: ReturnType<typeof setInterval> | undefined } = {
+      current: undefined,
+    };
+
+    const poll = () => {
+      fetch(`${API}/api/videos/${videoId}/processing-status`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => {
+          if (!j) return;
+          setProcessing({
+            progress_percent: j.progress_percent,
+            stage: j.stage,
+            eta_seconds: j.eta_seconds,
+          });
+          if (["completed", "error", "error_no_shots"].includes(j.status) && idRef.current) {
+            clearInterval(idRef.current);
+          }
+        })
+        .catch(() => {});
+    };
+
+    poll();
+    idRef.current = setInterval(poll, 2000);
+    return () => {
+      if (idRef.current) clearInterval(idRef.current);
+    };
+  }, [success, videoId]);
 
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -20,20 +64,71 @@ export default function UploadPage() {
       const formData = new FormData();
       formData.append("file", file);
       
-      const response = await fetch("http://localhost:8000/api/videos/upload", {
+      const response = await fetch(`${API}/api/videos/upload`, {
         method: "POST",
         body: formData,
       });
-      
-      if (!response.ok) throw new Error("Upload failed.");
-      
+
+      const raw = await response.text();
+      let data: { video_id?: unknown; detail?: unknown } = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        /* ignore */
+      }
+
+      if (!response.ok) {
+        const detail =
+          typeof data.detail === "string"
+            ? data.detail
+            : Array.isArray(data.detail)
+              ? data.detail.map((d) => (d as { msg?: string }).msg).join(", ")
+              : raw || `HTTP ${response.status}`;
+        throw new Error(detail);
+      }
+
+      const vid =
+        typeof data.video_id === "number"
+          ? data.video_id
+          : typeof data.video_id === "string"
+            ? Number(data.video_id)
+            : NaN;
+      setVideoId(Number.isFinite(vid) ? vid : null);
       setUploading(false);
       setSuccess(true);
     } catch (error) {
       console.error("Transmission failed:", error);
-      alert("Error: Upload Failed. Verify the backend is online.");
+      const msg =
+        error instanceof Error ? error.message : "Upload failed.";
+      alert(
+        `Upload failed: ${msg}\n\nCheck that the API is running (${API}) and the database schema is up to date (alembic upgrade head in /backend).`
+      );
       setUploading(false);
     }
+  }
+
+  const pickFile = (f: File | undefined | null) => {
+    if (f) setFile(f);
+  };
+
+  const onDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(true);
+  };
+
+  const onDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    const f = e.dataTransfer.files?.[0];
+    pickFile(f);
   }
 
   return (
@@ -76,9 +171,22 @@ export default function UploadPage() {
               <CheckCircle className="w-24 h-24 text-green-400 mb-6 drop-shadow-[0_0_15px_rgba(74,222,128,0.5)]" />
             </motion.div>
             <h2 className="text-3xl font-bold text-white mb-4">Pipeline Engaged</h2>
-            <p className="text-slate-300 text-lg max-w-md mb-8">
+            <p className="text-slate-300 text-lg max-w-md mb-6">
               Your video is actively rendering. The AI is mapping crosshair coordinates against clay presentations.
             </p>
+            {processing || videoId != null ? (
+              <div className="w-full max-w-md mb-8 flex justify-center">
+                <ProcessingProgressBar
+                  processing={
+                    processing ?? {
+                      progress_percent: null,
+                      stage: "Connecting…",
+                      eta_seconds: null,
+                    }
+                  }
+                />
+              </div>
+            ) : null}
             <Link href="/dashboard/sessions">
               <motion.button 
                 whileHover={{ scale: 1.05 }}
@@ -115,8 +223,12 @@ export default function UploadPage() {
 
             <motion.div 
               whileHover={{ scale: 1.01 }}
+              onDragOver={onDragOver}
+              onDragLeave={onDragLeave}
+              onDrop={onDrop}
               className={`relative border-2 border-dashed rounded-2xl p-16 flex flex-col items-center justify-center text-center transition-all bg-slate-900/30 overflow-hidden group
-                ${file ? 'border-sky-500 bg-sky-900/20' : 'border-slate-700 hover:border-blue-500/50 hover:bg-slate-800/50'}`}
+                ${file ? 'border-sky-500 bg-sky-900/20' : 'border-slate-700 hover:border-blue-500/50 hover:bg-slate-800/50'}
+                ${dragActive ? 'border-sky-400 bg-sky-900/30 ring-2 ring-sky-500/40' : ''}`}
             >
               {file && (
                 <div className="absolute inset-0 bg-gradient-to-t from-sky-500/10 to-transparent pointer-events-none" />
@@ -133,7 +245,7 @@ export default function UploadPage() {
                 {file ? file.name : 'Upload Video'}
               </h3>
               <p className="text-slate-400 mb-6 font-light">
-                {file ? `${(file.size / 1024 / 1024).toFixed(2)} MB Payload Ready` : 'Drag ShotKam .avi/.mp4 or browse files.'}
+                {file ? `${(file.size / 1024 / 1024).toFixed(2)} MB Payload Ready` : 'Drag ShotKam .mp4 / .avi / .mov here or browse files.'}
               </p>
               
               <label className="relative overflow-hidden group cursor-pointer">
@@ -141,7 +253,7 @@ export default function UploadPage() {
                 <span className="relative bg-slate-800 border border-slate-600 text-white font-medium px-6 py-2.5 rounded-full shadow-lg transition-transform hover:scale-105 inline-block">
                   Browse Files
                 </span>
-                <input type="file" accept="video/mp4,video/avi" className="hidden" onChange={e => setFile(e.target.files?.[0] || null)} />
+                <input type="file" accept={VIDEO_ACCEPT} className="hidden" onChange={(e) => pickFile(e.target.files?.[0] || null)} />
               </label>
             </motion.div>
 

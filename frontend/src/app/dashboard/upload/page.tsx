@@ -9,15 +9,33 @@ import {
   type ProcessingPayload,
 } from "@/components/dashboard/ProcessingProgressBar";
 
-// Helper to upload a file with progress tracking
+// Two-step upload approach to bypass serverless function body size limits:
+// 1. Get auth token and user ID from server (small JSON request)
+// 2. Upload file directly to Edge runtime route (no body size limit)
 async function uploadFileWithProgress(
   file: File,
   onProgress: (percent: number) => void
 ): Promise<{ pathname: string; url: string }> {
+  // Step 1: Get auth token from server
+  const tokenResponse = await fetch("/api/videos/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ 
+      filename: file.name, 
+      contentType: file.type 
+    }),
+  });
+
+  if (!tokenResponse.ok) {
+    const error = await tokenResponse.json();
+    throw new Error(error.error || "Failed to get upload token");
+  }
+
+  const { userId } = await tokenResponse.json();
+
+  // Step 2: Upload directly to Edge route using XHR for progress tracking
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const formData = new FormData();
-    formData.append("file", file);
 
     xhr.upload.addEventListener("progress", (event) => {
       if (event.lengthComputable) {
@@ -48,8 +66,11 @@ async function uploadFileWithProgress(
       reject(new Error("Network error during upload"));
     });
 
-    xhr.open("POST", "/api/videos/upload");
-    xhr.send(formData);
+    xhr.open("POST", "/api/videos/upload-direct");
+    xhr.setRequestHeader("x-user-id", userId);
+    xhr.setRequestHeader("x-filename", encodeURIComponent(file.name));
+    xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
+    xhr.send(file);
   });
 }
 

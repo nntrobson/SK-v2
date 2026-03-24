@@ -4,74 +4,31 @@ import React, { useState, useEffect } from "react";
 import { UploadCloud, CheckCircle, Video, ChevronRight, Film, X } from "lucide-react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
+import { upload } from "@vercel/blob/client";
 import {
   ProcessingProgressBar,
   type ProcessingPayload,
 } from "@/components/dashboard/ProcessingProgressBar";
 
-// Two-step upload approach to bypass serverless function body size limits:
-// 1. Get auth token and user ID from server (small JSON request)
-// 2. Upload file directly to Edge runtime route (no body size limit)
+// Upload file directly to Vercel Blob using client upload
+// The file goes directly from browser to Blob storage (bypasses serverless function limits)
 async function uploadFileWithProgress(
   file: File,
   onProgress: (percent: number) => void
 ): Promise<{ pathname: string; url: string }> {
-  // Step 1: Get auth token from server
-  const tokenResponse = await fetch("/api/videos/upload", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ 
-      filename: file.name, 
-      contentType: file.type 
-    }),
+  const blob = await upload(file.name, file, {
+    access: "private",
+    handleUploadUrl: "/api/videos/upload",
+    onUploadProgress: (progressEvent) => {
+      const percent = Math.round((progressEvent.loaded / progressEvent.total) * 100);
+      onProgress(percent);
+    },
   });
 
-  if (!tokenResponse.ok) {
-    const error = await tokenResponse.json();
-    throw new Error(error.error || "Failed to get upload token");
-  }
-
-  const { userId } = await tokenResponse.json();
-
-  // Step 2: Upload directly to Edge route using XHR for progress tracking
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-
-    xhr.upload.addEventListener("progress", (event) => {
-      if (event.lengthComputable) {
-        const percent = Math.round((event.loaded / event.total) * 100);
-        onProgress(percent);
-      }
-    });
-
-    xhr.addEventListener("load", () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const response = JSON.parse(xhr.responseText);
-          resolve(response);
-        } catch {
-          reject(new Error("Invalid response"));
-        }
-      } else {
-        try {
-          const error = JSON.parse(xhr.responseText);
-          reject(new Error(error.error || `Upload failed with status ${xhr.status}`));
-        } catch {
-          reject(new Error(`Upload failed with status ${xhr.status}`));
-        }
-      }
-    });
-
-    xhr.addEventListener("error", () => {
-      reject(new Error("Network error during upload"));
-    });
-
-    xhr.open("POST", "/api/videos/upload-direct");
-    xhr.setRequestHeader("x-user-id", userId);
-    xhr.setRequestHeader("x-filename", encodeURIComponent(file.name));
-    xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
-    xhr.send(file);
-  });
+  return {
+    pathname: blob.pathname,
+    url: blob.url,
+  };
 }
 
 const VIDEO_ACCEPT =

@@ -164,7 +164,7 @@ class StabilizedTraceAnnotator:
     SMOOTH_WINDOW = 7
 
     def __init__(self, trace_length: int = 120, thickness: int = 2, color: tuple = (0, 165, 255)):
-        self.history = {} # tracker_id -> list of (x, y) stabilized
+        self.history = [] # list of (x, y) stabilized
         self.trace_length = trace_length
         self.thickness = thickness
         self.color = color
@@ -174,30 +174,28 @@ class StabilizedTraceAnnotator:
         self.frozen = True
 
     def update_and_annotate(self, frame: np.ndarray, tracked_detections: sv.Detections, transform_matrix: np.ndarray) -> np.ndarray:
-        if not self.frozen:
-            for i in range(len(tracked_detections)):
-                t_id = tracked_detections.tracker_id[i]
-                bbox = tracked_detections.xyxy[i]
-                cx = (bbox[0] + bbox[2]) / 2
-                cy = (bbox[1] + bbox[3]) / 2
+        if not self.frozen and len(tracked_detections) > 0:
+            # Pick the most confident or first detection if multiple
+            # Usually only one primary clay is tracked
+            idx = 0
+            if hasattr(tracked_detections, 'confidence') and tracked_detections.confidence is not None and len(tracked_detections.confidence) > 0:
+                idx = np.argmax(tracked_detections.confidence)
+                
+            bbox = tracked_detections.xyxy[idx]
+            cx = (bbox[0] + bbox[2]) / 2
+            cy = (bbox[1] + bbox[3]) / 2
 
-                if t_id not in self.history:
-                    self.history[t_id] = []
+            if not self.history or (abs(self.history[-1][0] - cx) > 0.1 or abs(self.history[-1][1] - cy) > 0.1):
+                self.history.append((cx, cy))
 
-                if not self.history[t_id] or (abs(self.history[t_id][-1][0] - cx) > 0.1 or abs(self.history[t_id][-1][1] - cy) > 0.1):
-                    self.history[t_id].append((cx, cy))
-
-                if len(self.history[t_id]) > self.trace_length:
-                    self.history[t_id].pop(0)
+            if len(self.history) > self.trace_length:
+                self.history.pop(0)
 
         inv_transform = np.linalg.inv(transform_matrix)
 
-        for t_id, points in self.history.items():
-            if len(points) < 2:
-                continue
-
+        if len(self.history) >= 2:
             screen_points_raw = []
-            for (sx, sy) in points:
+            for (sx, sy) in self.history:
                 pt_screen = inv_transform @ np.array([sx, sy, 1.0])
                 screen_points_raw.append((pt_screen[0], pt_screen[1]))
 
@@ -219,9 +217,9 @@ class StabilizedTraceAnnotator:
 class TrajectoryVisualizer:
     def __init__(self, fps: int = 60, trace_length: int = 1200):
         self.tracker = sv.ByteTrack(
-            track_activation_threshold=0.1,
-            lost_track_buffer=fps * 2,
-            minimum_matching_threshold=0.8,
+            track_activation_threshold=0.05,
+            lost_track_buffer=fps * 3,
+            minimum_matching_threshold=0.4,
             frame_rate=fps,
         )
         self.trace_annotator = StabilizedTraceAnnotator(trace_length=trace_length, thickness=3)

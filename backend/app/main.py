@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app import database, models
 from app.shot_payloads import serialize_session_shot
+from app.video_management import delete_video_instance
 
 app = FastAPI(title="ShotTracker API", version="0.1.0")
 
@@ -197,8 +198,7 @@ def patch_shot_classification(shot_id: int, body: ShotClassificationUpdate, db: 
 
 
 class ReclassifyRequest(BaseModel):
-    thresh_moderate: float = 8.0
-    thresh_hard: float = 30.0
+    thresholds: dict[str, dict[str, float]]
 
 
 @app.post("/api/shots/reclassify")
@@ -245,10 +245,15 @@ def reclassify_all_shots(body: ReclassifyRequest, db: Session = Depends(database
         else:
             angle = 0.0
 
+        station = shot.station or "unknown"
+        station_thresh = body.thresholds.get(station, {"thresh_moderate": 8.0, "thresh_hard": 30.0})
+        t_mod = station_thresh.get("thresh_moderate", 8.0)
+        t_hard = station_thresh.get("thresh_hard", 30.0)
+
         abs_angle = abs(angle)
-        if abs_angle >= body.thresh_hard:
+        if abs_angle >= t_hard:
             label = "hard_left" if angle < 0 else "hard_right"
-        elif abs_angle >= body.thresh_moderate:
+        elif abs_angle >= t_mod:
             label = "moderate_left" if angle < 0 else "moderate_right"
         else:
             label = "straight"
@@ -262,11 +267,72 @@ def reclassify_all_shots(body: ReclassifyRequest, db: Session = Depends(database
 
 
 import os
+import re
 import cv2
 import uuid
 import shutil
 from fastapi import File, UploadFile, BackgroundTasks
 from fastapi.responses import FileResponse, Response
+
+
+def _get_or_create_upload_round(db: Session) -> models.Round:
+    dt = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    session = db.query(models.Session).filter(models.Session.date == dt).first()
+    if not session:
+        session = models.Session(
+            date=dt,
+            metadata_json={
+                "venue": "Silver Dollar Club (Upload)",
+                "notes": "Manual UI Upload",
+            },
+        )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+
+    round_entry = (
+        db.query(models.Round).filter(models.Round.session_id == session.id).first()
+    )
+    if not round_entry:
+        round_entry = models.Round(session_id=session.id, type="Trap Singles")
+        db.add(round_entry)
+        db.commit()
+        db.refresh(round_entry)
+    return round_entry
+
+
+def _sanitize_uploaded_filename(filename: Optional[str]) -> str:
+    raw = os.path.basename(filename or "video.mp4").strip()
+    if not raw:
+        raw = "video.mp4"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", raw)
+    safe = safe.strip("._") or "video.mp4"
+    if "." not in safe:
+        safe = f"{safe}.mp4"
+    return safe
+
+
+def _store_uploaded_video(
+    db: Session, background_tasks: BackgroundTasks, file: UploadFile
+) -> models.Video:
+    os.makedirs("uploads", exist_ok=True)
+    original_name = _sanitize_uploaded_filename(file.filename)
+    unique_filename = f"{uuid.uuid4()}_{original_name}"
+    filepath = os.path.abspath(os.path.join("uploads", unique_filename))
+
+    with open(filepath, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    round_entry = _get_or_create_upload_round(db)
+    video = models.Video(round_id=round_entry.id, filepath=filepath, status="pending")
+    db.add(video)
+    db.commit()
+    db.refresh(video)
+
+    from cv_pipeline.worker import process_video_task
+
+    background_tasks.add_task(process_video_task, video.id)
+    return video
 
 @app.post("/api/videos/upload")
 async def upload_video(
@@ -274,41 +340,26 @@ async def upload_video(
     file: UploadFile = File(...), 
     db: Session = Depends(database.get_db)
 ):
-    # Save the file to disk
-    os.makedirs("uploads", exist_ok=True)
-    file_extension = os.path.splitext(file.filename)[1]
-    unique_filename = f"{uuid.uuid4()}{file_extension}"
-    filepath = os.path.abspath(os.path.join("uploads", unique_filename))
-    
-    with open(filepath, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-        
-    # Create DB Entries
-    dt = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    session = db.query(models.Session).filter(models.Session.date == dt).first()
-    if not session:
-        session = models.Session(date=dt, metadata_json={"venue": "Silver Dollar Club (Upload)", "notes": "Manual UI Upload"})
-        db.add(session)
-        db.commit()
-        db.refresh(session)
-        
-    round_entry = db.query(models.Round).filter(models.Round.session_id == session.id).first()
-    if not round_entry:
-        round_entry = models.Round(session_id=session.id, type="Trap Singles")
-        db.add(round_entry)
-        db.commit()
-        db.refresh(round_entry)
-        
-    video = models.Video(round_id=round_entry.id, filepath=filepath, status="pending")
-    db.add(video)
-    db.commit()
-    db.refresh(video)
-    
-    # Spawn background worker so the frontend isn't blocked mapping 400 inference requests
-    from cv_pipeline.worker import process_video_task
-    background_tasks.add_task(process_video_task, video.id)
-    
+    video = _store_uploaded_video(db, background_tasks, file)
     return {"status": "success", "video_id": video.id, "message": "Upload successful."}
+
+
+@app.post("/api/videos/upload-batch")
+async def upload_videos_batch(
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+    db: Session = Depends(database.get_db),
+):
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+
+    videos = [_store_uploaded_video(db, background_tasks, file) for file in files]
+    return {
+        "status": "success",
+        "count": len(videos),
+        "video_ids": [video.id for video in videos],
+        "message": f"Queued {len(videos)} videos for processing.",
+    }
 
 
 @app.get("/api/sessions/{session_id}")
@@ -326,6 +377,29 @@ def get_session(session_id: int, db: Session = Depends(database.get_db)):
         "type": rounds[0].type if rounds else "Unknown",
         "metadata": s.metadata_json
     }
+
+@app.delete("/api/sessions/{session_id}")
+def delete_session(session_id: int, db: Session = Depends(database.get_db)):
+    session = db.query(models.Session).filter(models.Session.id == session_id).first()
+    if not session:
+        return Response(status_code=404)
+        
+    rounds = db.query(models.Round).filter(models.Round.session_id == session.id).all()
+    for r in rounds:
+        videos = db.query(models.Video).filter(models.Video.round_id == r.id).all()
+        for v in videos:
+            delete_video_instance(db, v)
+            
+    # Cleanup any rounds/sessions that might be empty (if they weren't cleaned up by delete_video_instance)
+    session = db.query(models.Session).filter(models.Session.id == session_id).first()
+    if session:
+        rounds = db.query(models.Round).filter(models.Round.session_id == session.id).all()
+        for r in rounds:
+            db.delete(r)
+        db.delete(session)
+        db.commit()
+        
+    return {"status": "success"}
 
 class SessionUpdate(BaseModel):
     venue: Optional[str] = None
@@ -402,6 +476,14 @@ def move_video(video_id: int, move_data: VideoMove, db: Session = Depends(databa
     db.commit()
     
     return {"status": "success", "new_session_id": target_session_id}
+
+
+@app.delete("/api/videos/{video_id}")
+def delete_video(video_id: int, db: Session = Depends(database.get_db)):
+    video = db.query(models.Video).filter(models.Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    return delete_video_instance(db, video)
 
 import json as _json
 from pathlib import Path as _Path

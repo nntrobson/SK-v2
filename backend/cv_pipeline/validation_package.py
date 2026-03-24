@@ -955,11 +955,11 @@ def generate_dashboard_video(
             sp = stabilizer.stabilize_predictions(raw_preds, tm)
             annotated, _ = visualizer.process_and_annotate(annotated, sp, tm, frame_width=width, frame_height=height)
 
-        annotated = draw_overlay_boxes(annotated, overlay_boxes, timestamp_ms=int(round(current_time * 1000)))
-
         if not snapshot_captured and trails_frozen:
             cv2.imwrite(str(output_snapshot_path), annotated)
             snapshot_captured = True
+
+        annotated = draw_overlay_boxes(annotated, overlay_boxes, timestamp_ms=int(round(current_time * 1000)))
 
         writer.write(annotated)
 

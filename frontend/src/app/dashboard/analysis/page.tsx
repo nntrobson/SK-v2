@@ -64,18 +64,35 @@ export default function AnalysisPage() {
   const [selectedIdx, setSelectedIdx] = useState(-1);
   const [multiSelected, setMultiSelected] = useState<Set<number>>(new Set());
   const [filterMode, setFilterMode] = useState("all");
-  const [stationFilter, setStationFilter] = useState("all");
+  const [stationFilter, setStationFilter] = useState("trap-house");
   const [directionFilter, setDirectionFilter] = useState("all");
   const [showTuning, setShowTuning] = useState(false);
-  const [threshModerate, setThreshModerate] = useState(() => {
-    if (typeof window === "undefined") return 8;
-    const v = localStorage.getItem("trajThreshModerate");
-    return v ? Number(v) : 8;
-  });
-  const [threshHard, setThreshHard] = useState(() => {
-    if (typeof window === "undefined") return 30;
-    const v = localStorage.getItem("trajThreshHard");
-    return v ? Number(v) : 30;
+  const defaultThresholds: Record<string, { moderate: number; hard: number }> = {
+    "trap-house-1-2": { moderate: 8, hard: 30 },
+    "trap-house": { moderate: 8, hard: 30 },
+    "trap-house-4-5": { moderate: 8, hard: 30 },
+    "unknown": { moderate: 8, hard: 30 },
+  };
+
+  const [thresholds, setThresholds] = useState(() => {
+    if (typeof window === "undefined") return defaultThresholds;
+    try {
+      const v = localStorage.getItem("trajThresholdsPerStation");
+      if (v) return { ...defaultThresholds, ...JSON.parse(v) };
+    } catch {}
+    const oldMod = localStorage.getItem("trajThreshModerate");
+    const oldHard = localStorage.getItem("trajThreshHard");
+    if (oldMod || oldHard) {
+      const mod = oldMod ? Number(oldMod) : 8;
+      const hard = oldHard ? Number(oldHard) : 30;
+      return {
+        "trap-house-1-2": { moderate: mod, hard: hard },
+        "trap-house": { moderate: mod, hard: hard },
+        "trap-house-4-5": { moderate: mod, hard: hard },
+        "unknown": { moderate: mod, hard: hard },
+      };
+    }
+    return defaultThresholds;
   });
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<string | null>(null);
@@ -120,11 +137,12 @@ export default function AnalysisPage() {
         const station = s.station || "unknown";
         const storedPresentation = (s.presentation || "straight").toLowerCase();
 
+        const stationThresh = thresholds[station] || { moderate: 8, hard: 30 };
         const result = classifyTrajectory(
           trajX,
           trajY,
-          threshModerate,
-          threshHard
+          stationThresh.moderate,
+          stationThresh.hard
         );
 
         return {
@@ -139,20 +157,24 @@ export default function AnalysisPage() {
           agree: storedPresentation === result.label,
         };
       });
-  }, [apiShots, threshModerate, threshHard]);
+  }, [apiShots, thresholds]);
 
   useEffect(() => {
     if (shots.length <= 4) return;
     const hasSaved =
       typeof window !== "undefined" &&
-      (localStorage.getItem("trajThreshModerate") !== null ||
-        localStorage.getItem("trajThreshHard") !== null);
+      localStorage.getItem("trajThresholdsPerStation") !== null;
     if (hasSaved) return;
     const angles = shots.map((s) => s.result.angle);
     const [mod, hard] = autoDetectThresholds(angles);
     queueMicrotask(() => {
-      setThreshModerate(mod);
-      setThreshHard(hard);
+      setThresholds((prev: Record<string, { moderate: number; hard: number }>) => {
+        const next = { ...prev };
+        for (const k of Object.keys(next)) {
+          next[k] = { moderate: mod, hard: hard };
+        }
+        return next;
+      });
     });
   }, [apiShots.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -169,8 +191,9 @@ export default function AnalysisPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          thresh_moderate: threshModerate,
-          thresh_hard: threshHard,
+          thresholds: Object.fromEntries(
+            Object.entries(thresholds).map(([st, t]) => [st, { thresh_moderate: t.moderate, thresh_hard: t.hard }])
+          )
         }),
       })
         .then(() => fetch("http://localhost:8000/api/shots"))
@@ -180,7 +203,7 @@ export default function AnalysisPage() {
     }, 600);
 
     return () => clearTimeout(timer);
-  }, [threshModerate, threshHard, shots]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [thresholds, shots]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const stations = useMemo(() => {
     const set = new Set(shots.map((s) => s.station));
@@ -290,14 +313,22 @@ export default function AnalysisPage() {
   }, [shots, userLabels]);
 
   const updateThreshModerate = useCallback((v: number) => {
-    setThreshModerate(v);
-    localStorage.setItem("trajThreshModerate", String(v));
-  }, []);
+    setThresholds((prev: Record<string, { moderate: number; hard: number }>) => {
+      const current = prev[stationFilter] || { moderate: 8, hard: 30 };
+      const next = { ...prev, [stationFilter]: { ...current, moderate: v } };
+      localStorage.setItem("trajThresholdsPerStation", JSON.stringify(next));
+      return next;
+    });
+  }, [stationFilter]);
 
   const updateThreshHard = useCallback((v: number) => {
-    setThreshHard(v);
-    localStorage.setItem("trajThreshHard", String(v));
-  }, []);
+    setThresholds((prev: Record<string, { moderate: number; hard: number }>) => {
+      const current = prev[stationFilter] || { moderate: 8, hard: 30 };
+      const next = { ...prev, [stationFilter]: { ...current, hard: v } };
+      localStorage.setItem("trajThresholdsPerStation", JSON.stringify(next));
+      return next;
+    });
+  }, [stationFilter]);
 
   const saveClassifications = useCallback(async () => {
     setSaving(true);
@@ -307,8 +338,9 @@ export default function AnalysisPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          thresh_moderate: threshModerate,
-          thresh_hard: threshHard,
+          thresholds: Object.fromEntries(
+            Object.entries(thresholds).map(([st, t]) => [st, { thresh_moderate: t.moderate, thresh_hard: t.hard }])
+          )
         }),
       });
       const data = await res.json();
@@ -322,7 +354,7 @@ export default function AnalysisPage() {
     } finally {
       setSaving(false);
     }
-  }, [threshModerate, threshHard]);
+  }, [thresholds]);
 
   const exportUserLabels = useCallback(() => {
     const blob = new Blob([JSON.stringify(userLabels, null, 2)], {
@@ -432,7 +464,6 @@ export default function AnalysisPage() {
           }}
           className="bg-slate-800 border border-slate-700 text-slate-200 text-xs px-2 py-1.5 rounded-lg"
         >
-          <option value="all">All stations</option>
           {stations.map((s) => (
             <option key={s} value={s}>
               {s}
@@ -508,7 +539,7 @@ export default function AnalysisPage() {
           <div className="p-4 flex gap-8 items-start flex-wrap">
             <div className="min-w-[260px]">
               <div className="text-xs text-slate-400 font-semibold mb-2">
-                Angle Thresholds (degrees from vertical)
+                Angle Thresholds (degrees from vertical) for {stationFilter}
               </div>
               <div className="flex items-center gap-2 text-xs mb-2">
                 <label className="w-24 text-slate-400">Hard (&ge;)</label>
@@ -516,12 +547,12 @@ export default function AnalysisPage() {
                   type="range"
                   min={15}
                   max={60}
-                  value={threshHard}
+                  value={currentThreshHard}
                   onChange={(e) => updateThreshHard(Number(e.target.value))}
                   className="flex-1 accent-cyan-400"
                 />
                 <span className="w-8 text-right text-cyan-400 font-mono font-semibold">
-                  {threshHard}
+                  {currentThreshHard}
                 </span>
               </div>
               <div className="flex items-center gap-2 text-xs mb-2">
@@ -530,12 +561,12 @@ export default function AnalysisPage() {
                   type="range"
                   min={2}
                   max={30}
-                  value={threshModerate}
+                  value={currentThreshModerate}
                   onChange={(e) => updateThreshModerate(Number(e.target.value))}
                   className="flex-1 accent-cyan-400"
                 />
                 <span className="w-8 text-right text-cyan-400 font-mono font-semibold">
-                  {threshModerate}
+                  {currentThreshModerate}
                 </span>
               </div>
               <div className="text-[10px] text-slate-600 mt-1">
@@ -552,8 +583,8 @@ export default function AnalysisPage() {
               </div>
               <AngleHistogram
                 angles={allAngles}
-                threshModerate={threshModerate}
-                threshHard={threshHard}
+                threshModerate={currentThreshModerate}
+                threshHard={currentThreshHard}
               />
             </div>
             <div className="text-[11px] text-slate-500 min-w-[180px]">

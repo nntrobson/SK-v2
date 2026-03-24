@@ -15,10 +15,11 @@ import {
   ReferenceLine,
   Customized,
 } from "recharts";
-import { ArrowLeft, Target, Activity, Video, Crosshair, Sparkles, SlidersHorizontal, X } from "lucide-react";
+import { ArrowLeft, Target, Activity, Video, Crosshair, Sparkles, SlidersHorizontal, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import Image from "next/image";
-import { motion, type Variants } from "framer-motion";
+import { useRouter } from "next/navigation";
+import { motion, type Variants, AnimatePresence } from "framer-motion";
 import {
   describeHorizontalOffset,
   describeVerticalOffset,
@@ -26,6 +27,12 @@ import {
   getShotPatternSummary,
   type AveragePosition,
 } from "./shot-placement-insights";
+import {
+  formatClipOffset,
+  getShotTraceDateLabel,
+  getShotTraceShotLabel,
+  getShotTraceTimeLabel,
+} from "./shot-trace-timestamps";
 
 interface OverlayBbox {
   x: number;
@@ -377,7 +384,7 @@ function buildTrailElements(
   return elements;
 }
 
-const TrajectoryDot = (props: TrajectoryShapeProps) => {
+const TrajectoryDot = React.memo((props: TrajectoryShapeProps) => {
   const { cx, cy, fill, payload, xAxis, yAxis, onClickShot, isSelected, anySelected } = props;
 
   const dots = buildTrailElements("tail", payload.trajectory, xAxis, yAxis, fill, anySelected, isSelected);
@@ -400,9 +407,10 @@ const TrajectoryDot = (props: TrajectoryShapeProps) => {
       <circle cx={cx} cy={cy} r={2.4} fill="#a7f3d0" fillOpacity={0.95} />
     </g>
   );
-};
+});
+TrajectoryDot.displayName = "TrajectoryDot";
 
-const TrajectoryMiss = (props: TrajectoryShapeProps) => {
+const TrajectoryMiss = React.memo((props: TrajectoryShapeProps) => {
   const { cx, cy, fill, payload, xAxis, yAxis, onClickShot, isSelected, anySelected } = props;
 
   const dots = buildTrailElements("miss-tail", payload.trajectory, xAxis, yAxis, "#94a3b8", anySelected, isSelected);
@@ -417,9 +425,10 @@ const TrajectoryMiss = (props: TrajectoryShapeProps) => {
       <line x1={cx + 5.25} y1={cy - 5.25} x2={cx - 5.25} y2={cy + 5.25} stroke={fill} strokeWidth={2.75} strokeLinecap="round" />
     </g>
   );
-};
+});
+TrajectoryMiss.displayName = "TrajectoryMiss";
 
-const TrajectoryUnknown = (props: TrajectoryShapeProps) => {
+const TrajectoryUnknown = React.memo((props: TrajectoryShapeProps) => {
   const { cx, cy, fill, payload, xAxis, yAxis, onClickShot, isSelected, anySelected } = props;
 
   const dots = buildTrailElements("unknown-tail", payload.trajectory, xAxis, yAxis, fill, anySelected, isSelected);
@@ -444,9 +453,10 @@ const TrajectoryUnknown = (props: TrajectoryShapeProps) => {
       <circle cx={cx} cy={cy} r={2.25} fill="#fde68a" fillOpacity={0.95} />
     </g>
   );
-};
+});
+TrajectoryUnknown.displayName = "TrajectoryUnknown";
 
-const ShotPlacementTooltip = ({
+const ShotPlacementTooltip = React.memo(({
   active,
   payload,
 }: {
@@ -486,7 +496,8 @@ const ShotPlacementTooltip = ({
       </div>
     </div>
   );
-};
+});
+ShotPlacementTooltip.displayName = "ShotPlacementTooltip";
 
 function computeParabolicProjection(
   trajectory: Array<{ x: number; y: number }>,
@@ -821,7 +832,7 @@ const SessionTelemetryHeaderStrip = ({
   );
 };
 
-const OverlayBoxes = ({
+const OverlayBoxes = React.memo(({
   boxes,
   crosshairX,
   crosshairY,
@@ -878,7 +889,8 @@ const OverlayBoxes = ({
       })}
     </>
   );
-};
+});
+OverlayBoxes.displayName = "OverlayBoxes";
 
 interface ValidationCheck {
   name: string;
@@ -1032,8 +1044,10 @@ const ValidationPanel = ({ shots }: { shots: ShotData[] }) => {
 };
 
 export default function SessionAnalyticsPage({ params }: { params: Promise<{ id: string }> }) {
+  const router = useRouter();
   const [filter, setFilter] = useState("all");
   const [stationFilter, setStationFilter] = useState("all");
+  const [hasSetInitialFilters, setHasSetInitialFilters] = useState(false);
   const [shotData, setShotData] = useState<ShotData[]>([]);
   const [sessionInfo, setSessionInfo] = useState<SessionInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1050,19 +1064,22 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
   const [editForm, setEditForm] = useState({ venue: "", date: "", type: "" });
   
   const [isCategorizeModalOpen, setIsCategorizeModalOpen] = useState(false);
+  const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
   const [categorizeShotId, setCategorizeShotId] = useState<number | null>(null);
   const [newCategorizeName, setNewCategorizeName] = useState("");
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
+  const [deleteTarget, setDeleteTarget] = useState<ShotData | null>(null);
+  const [deletingVideoId, setDeletingVideoId] = useState<number | null>(null);
   const [classificationSavingId, setClassificationSavingId] = useState<number | null>(null);
 
   const unwrappedParams = React.use(params);
 
-  const applyShotUpdateFromApi = (shotId: number, updated: ShotData) => {
+  const applyShotUpdateFromApi = useCallback((shotId: number, updated: ShotData) => {
     setShotData((prev) => prev.map((s) => (s.id === shotId ? { ...s, ...updated } : s)));
     setSelectedShot((prev) => (prev?.id === shotId ? { ...prev, ...updated } : prev));
-  };
+  }, []);
 
-  const patchShotClassification = async (
+  const patchShotClassification = useCallback(async (
     shotId: number,
     patch: { break_label?: string; station?: string; presentation?: string },
   ) => {
@@ -1084,7 +1101,31 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
     } finally {
       setClassificationSavingId(null);
     }
-  };
+  }, [applyShotUpdateFromApi]);
+
+  const removeVideoFromView = useCallback((videoId: number) => {
+    setShotData((prev) => {
+      const remaining = prev.filter((shot) => shot.video_id !== videoId);
+      if (remaining.length === 0) {
+        router.push("/dashboard/sessions");
+      }
+      return remaining;
+    });
+    setIsCategorizeModalOpen(false);
+    setCategorizeShotId(null);
+    setDeleteTarget(null);
+    setSelectedShot((prev) => {
+      if (prev?.video_id === videoId) {
+        setReplayMode("photo");
+        setActiveOverlayFrame(null);
+        setInterpolatedBoxes([]);
+        setIsReviewModalOpen(false);
+        lastVideoTimeRef.current = -1;
+        return null;
+      }
+      return prev;
+    });
+  }, [router]);
 
   useEffect(() => {
     Promise.all([
@@ -1108,6 +1149,39 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
         setLoading(false);
       });
   }, [unwrappedParams.id]);
+
+  useEffect(() => {
+    if (shotData.length > 0 && !hasSetInitialFilters) {
+      const stCounts: Record<string, number> = {};
+      shotData.forEach(d => {
+        let st = "unknown";
+        if (stationOptionIsActive(d.station, "trap-house-1-2")) st = "trap-house-1-2";
+        else if (stationOptionIsActive(d.station, "trap-house")) st = "trap-house";
+        else if (stationOptionIsActive(d.station, "trap-house-4-5")) st = "trap-house-4-5";
+        stCounts[st] = (stCounts[st] || 0) + 1;
+      });
+      if (Object.keys(stCounts).length > 0) {
+        const topStation = Object.entries(stCounts).sort((a, b) => b[1] - a[1])[0][0];
+
+        const pCounts: Record<string, number> = {};
+        shotData.forEach(d => {
+          if (stationOptionIsActive(d.station, topStation)) {
+            const p = d.presentation || "straight";
+            pCounts[p] = (pCounts[p] || 0) + 1;
+          }
+        });
+        const topPresentation = Object.keys(pCounts).length > 0 
+          ? Object.entries(pCounts).sort((a, b) => b[1] - a[1])[0][0] 
+          : "straight";
+
+        setStationFilter(topStation);
+        setFilter(topPresentation);
+      }
+      setHasSetInitialFilters(true);
+    } else if (shotData.length === 0 && !loading && !hasSetInitialFilters) {
+      setHasSetInitialFilters(true);
+    }
+  }, [shotData, loading, hasSetInitialFilters]);
 
   const handleUpdateSession = async () => {
     try {
@@ -1157,16 +1231,38 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
         body: JSON.stringify(payload)
       });
       if (res.ok) {
-        // Remove shot from current view
-        setShotData(prev => prev.filter(s => s.id !== categorizeShotId));
-        setIsCategorizeModalOpen(false);
-        setCategorizeShotId(null);
-        if (selectedShot?.id === categorizeShotId) {
-          setSelectedShot(null);
-        }
+        removeVideoFromView(videoId);
       }
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const openDeleteModal = (shot: ShotData) => {
+    if (!shot.video_id) return;
+    setIsCategorizeModalOpen(false);
+    setCategorizeShotId(null);
+    setDeleteTarget(shot);
+  };
+
+  const handleDeleteVideo = async () => {
+    const videoId = deleteTarget?.video_id;
+    if (!videoId) return;
+
+    setDeletingVideoId(videoId);
+    try {
+      const res = await fetch(`http://localhost:8000/api/videos/${videoId}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        console.error("Video delete failed", res.status);
+        return;
+      }
+      removeVideoFromView(videoId);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setDeletingVideoId(null);
     }
   };
 
@@ -1176,11 +1272,23 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
     setActiveOverlayFrame(null);
     setInterpolatedBoxes([]);
     lastVideoTimeRef.current = -1;
+    setIsReviewModalOpen(false);
   }, []);
 
-  const handleSelectShot = (shot: ShotData) => {
-    if (selectedShot?.id === shot.id) {
-      deselectShot();
+  const selectedShotIdRef = useRef<number | null>(null);
+  selectedShotIdRef.current = selectedShot?.id ?? null;
+  const anySelectedRef = useRef(!!selectedShot);
+  anySelectedRef.current = !!selectedShot;
+  const isReviewModalOpenRef = useRef(isReviewModalOpen);
+  isReviewModalOpenRef.current = isReviewModalOpen;
+
+  const handleSelectShot = useCallback((shot: ShotData) => {
+    if (selectedShotIdRef.current === shot.id) {
+      if (!isReviewModalOpenRef.current) {
+        setIsReviewModalOpen(true);
+      } else {
+        deselectShot();
+      }
       return;
     }
     setSelectedShot(shot);
@@ -1188,14 +1296,38 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
     setActiveOverlayFrame(getPhotoFrame(shot));
     setInterpolatedBoxes([]);
     lastVideoTimeRef.current = -1;
-  };
+    setIsReviewModalOpen(true);
+  }, [deselectShot]);
+
+  const hitShapeRenderer = useCallback((props: unknown) => {
+    const p = props as TrajectoryShapeProps;
+    return <TrajectoryDot {...p} onClickShot={handleSelectShot} anySelected={anySelectedRef.current} isSelected={selectedShotIdRef.current === p.payload?.id} />;
+  }, [handleSelectShot]);
+
+  const missShapeRenderer = useCallback((props: unknown) => {
+    const p = props as TrajectoryShapeProps;
+    return <TrajectoryMiss {...p} onClickShot={handleSelectShot} anySelected={anySelectedRef.current} isSelected={selectedShotIdRef.current === p.payload?.id} />;
+  }, [handleSelectShot]);
+
+  const unknownShapeRenderer = useCallback((props: unknown) => {
+    const p = props as TrajectoryShapeProps;
+    return <TrajectoryUnknown {...p} onClickShot={handleSelectShot} anySelected={anySelectedRef.current} isSelected={selectedShotIdRef.current === p.payload?.id} />;
+  }, [handleSelectShot]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      if (deleteTarget) {
+        setDeleteTarget(null);
+        return;
+      }
       if (isCategorizeModalOpen) {
         setIsCategorizeModalOpen(false);
         setCategorizeShotId(null);
+        return;
+      }
+      if (isReviewModalOpen) {
+        setIsReviewModalOpen(false);
         return;
       }
       if (selectedShot) {
@@ -1204,7 +1336,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectedShot, isCategorizeModalOpen, deselectShot]);
+  }, [selectedShot, isCategorizeModalOpen, isReviewModalOpen, deleteTarget, deselectShot]);
 
   useEffect(() => {
     if (replayMode !== "video" || !selectedShot?.tracking_data?.length) {
@@ -1235,8 +1367,8 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
   const presentationShotCounts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const d of shotData) {
-      if (stationFilter !== "all" && d.station !== stationFilter) continue;
-      const p = d.presentation;
+      if (stationFilter !== "all" && !stationOptionIsActive(d.station, stationFilter)) continue;
+      const p = d.presentation || "straight";
       c[p] = (c[p] ?? 0) + 1;
     }
     return c;
@@ -1246,30 +1378,36 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
     const c: Record<string, number> = {};
     for (const d of shotData) {
       if (filter !== "all" && d.presentation !== filter) continue;
-      const st = d.station?.trim();
-      if (!st) continue;
+      let st = "unknown";
+      if (stationOptionIsActive(d.station, "trap-house-1-2")) st = "trap-house-1-2";
+      else if (stationOptionIsActive(d.station, "trap-house")) st = "trap-house";
+      else if (stationOptionIsActive(d.station, "trap-house-4-5")) st = "trap-house-4-5";
       c[st] = (c[st] ?? 0) + 1;
     }
     return c;
   }, [shotData, filter]);
 
-  const filteredData = shotData.filter(d => 
+  const filteredData = useMemo(() => shotData.filter(d => 
     (filter === "all" || d.presentation === filter) &&
-    (stationFilter === "all" || d.station === stationFilter)
-  );
-  const hits = filteredData.filter(d => d.type === "hit");
-  const misses = filteredData.filter(d => d.type === "miss");
-  const unknowns = filteredData.filter(d => d.type === "unknown");
+    (stationFilter === "all" || stationOptionIsActive(d.station, stationFilter))
+  ), [shotData, filter, stationFilter]);
+  const hits = useMemo(() => filteredData.filter(d => d.type === "hit"), [filteredData]);
+  const misses = useMemo(() => filteredData.filter(d => d.type === "miss"), [filteredData]);
+  const unknowns = useMemo(() => filteredData.filter(d => d.type === "unknown"), [filteredData]);
 
-  const averageVisiblePosition = getAveragePosition(filteredData);
-  const averageHitPosition = getAveragePosition(hits);
-  const averageMissPosition = getAveragePosition(misses);
+  const averageVisiblePosition = useMemo(() => getAveragePosition(filteredData), [filteredData]);
+  const averageHitPosition = useMemo(() => getAveragePosition(hits), [hits]);
+  const averageMissPosition = useMemo(() => getAveragePosition(misses), [misses]);
   const chartDomain = useMemo(() => getProportionalSymmetricDomain(filteredData, 10, 1.5), [filteredData]);
-  const maxAbs = Math.max(Math.abs(chartDomain[0]), Math.abs(chartDomain[1]));
-  const symmetricDomain = [-maxAbs, maxAbs] as [number, number];
-  const breakHalf = Math.max(1.2, maxAbs * 0.155);
-  const breakWindowHalfWidth = breakHalf;
-  const breakWindowHalfHeight = breakHalf;
+  const { symmetricDomain, breakWindowHalfWidth, breakWindowHalfHeight } = useMemo(() => {
+    const maxAbs = Math.max(Math.abs(chartDomain[0]), Math.abs(chartDomain[1]));
+    const breakHalf = Math.max(1.2, maxAbs * 0.155);
+    return {
+      symmetricDomain: [-maxAbs, maxAbs] as [number, number],
+      breakWindowHalfWidth: breakHalf,
+      breakWindowHalfHeight: breakHalf,
+    };
+  }, [chartDomain]);
   const shotPatternSummary = useMemo(() => getShotPatternSummary({
     filter,
     hitsCount: hits.length,
@@ -1290,9 +1428,10 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
       : photoFrame?.overlay_boxes ?? [];
   const baseCrosshairX = activeFrame?.crosshair_x ?? selectedShot?.crosshair_x ?? selectedShot?.tracking_data?.[0]?.crosshair_x;
   const baseCrosshairY = activeFrame?.crosshair_y ?? selectedShot?.crosshair_y ?? selectedShot?.tracking_data?.[0]?.crosshair_y;
-  const overlayAspectRatio = selectedShot?.tracking_data?.length
-    ? `${selectedShot.tracking_data[0].crosshair_x * 2} / ${selectedShot.tracking_data[0].crosshair_y * 2}`
-    : "16/9";
+  
+  const videoWidth = selectedShot?.tracking_data?.[0]?.width || 1920;
+  const videoHeight = selectedShot?.tracking_data?.[0]?.height || 1080;
+  const overlayAspectRatio = `${videoWidth} / ${videoHeight}`;
 
   if (loading) {
     return (
@@ -1407,27 +1546,12 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                   Each mark shows where the target sat relative to <strong className="text-slate-300">frame center</strong> at the shot (the same reference the analysis pipeline uses). The plot is square with matching X/Y scales so distance in data units matches a true crosshair offset. The red + marks <strong className="text-slate-300">(0, 0)</strong>—zero offset from frame center—not where the physical bead or muzzle appears in the photo; the barrel is often along the top edge while math stays centered. Green shows the break window, red shows where misses leak, and the dashed guide tracks the average of what is currently visible.
                   {selectedShot ? (
                     <span className="mt-2 block text-xs text-slate-500">
-                      Click the same point again, press <kbd className="rounded border border-white/10 bg-slate-900/80 px-1 py-0.5 font-mono text-[10px] text-slate-400">Esc</kbd>
-                      , or use <span className="text-slate-400">Clear selection</span> beside the legend to drop the path, station highlight, and replay panel.
+                      Click the same point again or press <kbd className="rounded border border-white/10 bg-slate-900/80 px-1 py-0.5 font-mono text-[10px] text-slate-400">Esc</kbd> to drop the path and station highlight.
                     </span>
                   ) : null}
                 </p>
               </div>
               <div className="flex flex-col items-stretch gap-3 sm:items-end">
-                {selectedShot ? (
-                  <button
-                    type="button"
-                    onClick={deselectShot}
-                    title="Clear selected shot (path highlight, station ring, replay panel). Press Esc."
-                    className="flex items-center justify-center gap-2 self-end rounded-full border border-white/15 bg-slate-900/70 px-3 py-2 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-200 shadow-sm transition hover:border-cyan-500/40 hover:bg-slate-800/90 hover:text-white"
-                  >
-                    <X className="h-3.5 w-3.5 text-cyan-400" aria-hidden />
-                    <span>Clear selection</span>
-                    <kbd className="hidden rounded border border-white/10 bg-slate-950/80 px-1.5 py-0.5 font-mono text-[9px] font-semibold normal-case tracking-normal text-slate-500 sm:inline">
-                      Esc
-                    </kbd>
-                  </button>
-                ) : null}
               <div className="flex flex-wrap justify-end gap-3 text-[11px] font-bold uppercase tracking-[0.18em]">
                 <div className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-3 py-2 text-slate-300">
                   <span className="relative block h-3.5 w-3.5">
@@ -1638,21 +1762,21 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                     name="Successful Breaks" 
                     data={hits} 
                     fill="#34d399" 
-                    shape={(props: unknown) => <TrajectoryDot {...(props as TrajectoryShapeProps)} onClickShot={handleSelectShot} anySelected={!!selectedShot} isSelected={selectedShot?.id === (props as TrajectoryShapeProps).payload?.id} />} 
+                    shape={hitShapeRenderer} 
                   />
                   <Scatter 
                     name="Missed Targets" 
                     data={misses} 
                     fill="#f43f5e" 
-                    shape={(props: unknown) => <TrajectoryMiss {...(props as TrajectoryShapeProps)} onClickShot={handleSelectShot} anySelected={!!selectedShot} isSelected={selectedShot?.id === (props as TrajectoryShapeProps).payload?.id} />} 
+                    shape={missShapeRenderer} 
                   />
                   <Scatter 
                     name="Unknown Outcome" 
                     data={unknowns} 
                     fill="#f59e0b" 
-                    shape={(props: unknown) => <TrajectoryUnknown {...(props as TrajectoryShapeProps)} onClickShot={handleSelectShot} anySelected={!!selectedShot} isSelected={selectedShot?.id === (props as TrajectoryShapeProps).payload?.id} />} 
+                    shape={unknownShapeRenderer} 
                   />
-                  <Customized component={(props: Record<string, unknown>) => <ProjectionLine selectedShot={selectedShot} xAxisMap={props.xAxisMap as Record<string, { scale: (v: number) => number }>} yAxisMap={props.yAxisMap as Record<string, { scale: (v: number) => number }>} />} />
+                  <Customized component={<ProjectionLine selectedShot={selectedShot} />} />
                 </ScatterChart>
                 </ResponsiveContainer>
               </div>
@@ -1677,198 +1801,6 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                 <p className="mt-2 text-sm leading-relaxed text-blue-100/90">{shotPatternSummary.coaching}</p>
               </div>
             </motion.div>
-            
-            {/* Selected Shot Image Video Panel */}
-            {selectedShot && (
-              <motion.div 
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="mt-6 p-5 glass-panel rounded-xl flex flex-col gap-4 border-slate-700/50 relative overflow-hidden"
-              >
-                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-cyan-500 to-transparent opacity-20" />
-                <div className="flex justify-between items-center z-10">
-                  <h4 className="font-semibold text-white flex items-center gap-2 tracking-tight">
-                    <Video className="w-5 h-5 text-cyan-400" /> Shot Replay - <span className="capitalize">{selectedShot.presentation.replace('_', ' ')}</span>
-                  </h4>
-                  <div className="flex items-center gap-3">
-                    <div className="flex bg-slate-800/80 rounded-full p-1 border border-white/5">
-                      <button 
-                        onClick={() => setReplayMode('photo')} 
-                        className={`text-xs font-semibold uppercase tracking-wider px-4 py-1.5 rounded-full transition ${replayMode === 'photo' ? 'bg-cyan-500 text-white shadow-[0_0_10px_rgba(6,182,212,0.5)]' : 'text-slate-400 hover:text-white'}`}
-                      >
-                        Photo
-                      </button>
-                      <button 
-                        onClick={() => setReplayMode('video')} 
-                        className={`text-xs font-semibold uppercase tracking-wider px-4 py-1.5 rounded-full transition ${replayMode === 'video' ? 'bg-cyan-500 text-white shadow-[0_0_10px_rgba(6,182,212,0.5)]' : 'text-slate-400 hover:text-white'}`}
-                      >
-                        Video
-                      </button>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={deselectShot}
-                      className="text-slate-400 hover:text-white text-xs font-semibold uppercase tracking-wider bg-slate-800/80 hover:bg-slate-700 transition px-3 py-1.5 rounded-full"
-                    >
-                      Deselect
-                    </button>
-                  </div>
-                </div>
-                <div className="rounded-2xl border border-cyan-500/20 bg-cyan-950/20 px-4 py-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="flex items-center gap-2 text-white">
-                      <SlidersHorizontal className="h-4 w-4 text-cyan-400" />
-                      <div>
-                        <div className="text-xs font-bold uppercase tracking-[0.16em] text-cyan-200/90">Correct this shot</div>
-                        <p className="mt-1 max-w-xl text-[11px] font-normal normal-case tracking-normal text-slate-400">
-                          If the model misread the break or station, fix it here. The chart, break window, and coaching text update immediately.
-                        </p>
-                      </div>
-                    </div>
-                    {classificationSavingId === selectedShot.id && (
-                      <span className="text-[10px] font-semibold uppercase tracking-wider text-cyan-300">Saving…</span>
-                    )}
-                  </div>
-
-                  <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                    <div className="space-y-2">
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Outcome</div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {(
-                          [
-                            { typeKey: "hit" as const, api: "break" as const, label: "Break" },
-                            { typeKey: "miss" as const, api: "miss" as const, label: "Miss" },
-                            { typeKey: "unknown" as const, api: "unknown" as const, label: "Unknown" },
-                          ] as const
-                        ).map((opt) => {
-                          const active = selectedShot.type === opt.typeKey;
-                          return (
-                            <button
-                              key={opt.api}
-                              type="button"
-                              disabled={classificationSavingId === selectedShot.id || active}
-                              onClick={() => patchShotClassification(selectedShot.id, { break_label: opt.api })}
-                              className={`rounded-full border px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider transition ${
-                                active
-                                  ? `${OUTCOME_STYLES[opt.typeKey].badge} cursor-default`
-                                  : "border-white/15 bg-slate-900/60 text-slate-300 hover:border-white/25 hover:bg-slate-800/80 disabled:opacity-40"
-                              }`}
-                            >
-                              {opt.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Station</div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {STATION_OPTIONS.map((opt) => {
-                          const active = stationOptionIsActive(selectedShot.station, opt.value);
-                          return (
-                            <button
-                              key={opt.value}
-                              type="button"
-                              disabled={classificationSavingId === selectedShot.id || active}
-                              onClick={() =>
-                                patchShotClassification(selectedShot.id, {
-                                  station: opt.value === "unknown" ? "" : opt.value,
-                                })
-                              }
-                              className={`rounded-full border px-2.5 py-1.5 text-[11px] font-semibold transition ${
-                                active
-                                  ? "border-sky-400/50 bg-sky-500/15 text-sky-100 cursor-default"
-                                  : "border-white/15 bg-slate-900/60 text-slate-300 hover:border-white/25 hover:bg-slate-800/80 disabled:opacity-40"
-                              }`}
-                            >
-                              {opt.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label
-                        htmlFor={`presentation-${selectedShot.id}`}
-                        className="block text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500"
-                      >
-                        Presentation
-                      </label>
-                      <select
-                        id={`presentation-${selectedShot.id}`}
-                        title="Presentation angle"
-                        disabled={classificationSavingId === selectedShot.id}
-                        value={
-                          PRESENTATION_OPTIONS.some((o) => o.value === selectedShot.presentation)
-                            ? selectedShot.presentation
-                            : selectedShot.presentation || "straight"
-                        }
-                        onChange={(e) => patchShotClassification(selectedShot.id, { presentation: e.target.value })}
-                        className="w-full rounded-xl border border-white/15 bg-slate-950/80 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50 disabled:opacity-40"
-                      >
-                        {!PRESENTATION_OPTIONS.some((o) => o.value === selectedShot.presentation) &&
-                          selectedShot.presentation && (
-                            <option value={selectedShot.presentation}>
-                              {selectedShot.presentation.replace(/_/g, " ")} (current)
-                            </option>
-                          )}
-                        {PRESENTATION_OPTIONS.map((o) => (
-                          <option key={o.value} value={o.value}>
-                            {o.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="rounded-xl border border-white/10 bg-slate-900/40 px-4 py-3">
-                      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Pre-trigger</div>
-                      <div className="mt-1 text-sm font-semibold normal-case tracking-normal text-white">
-                        {selectedShot.pretrigger_time !== null && selectedShot.pretrigger_time !== undefined
-                          ? `${selectedShot.pretrigger_time.toFixed(3)}s`
-                          : "Unavailable"}
-                      </div>
-                      <p className="mt-2 text-[10px] font-normal normal-case tracking-normal text-slate-500">From video analysis — not editable</p>
-                    </div>
-                  </div>
-                </div>
-                <div className="w-full bg-slate-900 rounded-lg overflow-hidden flex flex-col items-center justify-center border border-slate-700/50 shadow-[inset_0_0_20px_rgba(0,0,0,0.5)] z-10 relative" style={{ height: "65vh", minHeight: "400px", maxHeight: "800px" }}>
-                  <div
-                    className="relative bg-slate-900 rounded-lg overflow-hidden border border-slate-700 shadow-xl"
-                    style={{
-                      height: "100%",
-                      maxWidth: "100%",
-                      aspectRatio: overlayAspectRatio,
-                    }}
-                  >
-                    {replayMode === "video" ? (
-                      <video
-                        ref={videoRef}
-                        src={`http://localhost:8000/api/videos/serve?path=${encodeURIComponent(selectedShot.video_path)}`}
-                        controls
-                        autoPlay
-                        muted
-                        playsInline
-                        className="absolute inset-0 h-full w-full object-contain"
-                      />
-                    ) : (
-                      <>
-                        <Image
-                          src={`http://localhost:8000/api/videos/frame?path=${encodeURIComponent(selectedShot.video_path)}&frame_idx=${selectedShot.pretrigger_frame_idx ?? photoFrame?.frame_idx ?? -1}&time_ms=${Math.round((selectedShot.pretrigger_time ?? photoFrame?.time ?? 1) * 1000)}`}
-                          alt="Pre-trigger frame"
-                          fill
-                          unoptimized
-                          sizes="(max-width: 1280px) 100vw, 70vw"
-                          className="absolute inset-0 h-full w-full object-contain pointer-events-none"
-                        />
-                        <OverlayBoxes boxes={overlayBoxes} crosshairX={baseCrosshairX} crosshairY={baseCrosshairY} />
-                      </>
-                    )}
-                  </div>
-                </div>
-              </motion.div>
-            )}
           </div>
 
         {/* Bottom Drilldown Row */}
@@ -1881,19 +1813,35 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
               <table className="w-full text-left border-collapse min-w-[600px]">
                 <thead>
                   <tr className="border-b border-slate-700/50">
-                    <th className="px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider"># Timeline</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider"># Date / Time</th>
                     <th className="px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">Outcome</th>
                     <th className="px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">Presentation</th>
                     <th className="px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider">Offset Coordinate</th>
                     <th className="px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider text-right">Verification</th>
-                    <th className="px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider text-right w-20">Organize</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wider text-right w-36">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {filteredData.map((shot, idx) => (
+                  {filteredData.map((shot, idx) => {
+                    const traceDate = getShotTraceDateLabel(shot.video_path, sessionInfo?.date);
+                    const traceTime = getShotTraceTimeLabel(shot.video_path, shot.pretrigger_time);
+                    const traceShot = getShotTraceShotLabel(shot.video_path, idx);
+
+                    return (
                     <tr key={shot.id} className="hover:bg-white/5 transition-colors group">
-                      <td className="px-4 py-4 font-mono text-sm text-slate-300">
-                        <span className="text-slate-500 mr-2">{String(idx + 1).padStart(2, '0')}</span> 00:0{idx + 1}:24
+                      <td className="px-4 py-4">
+                        <div className="flex items-start gap-3">
+                          <span className="pt-0.5 font-mono text-sm text-slate-500">
+                            {String(idx + 1).padStart(2, "0")}
+                          </span>
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium text-slate-200">{traceDate}</div>
+                            <div className="mt-1 font-mono text-xs text-slate-500">{traceTime}</div>
+                            <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-sky-300/80">
+                              {traceShot}
+                            </div>
+                          </div>
+                        </div>
                       </td>
                       <td className="px-4 py-4">
                         <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${OUTCOME_STYLES[shot.type].badge}`}>
@@ -1916,15 +1864,26 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                         </button>
                       </td>
                       <td className="px-4 py-4 text-right">
-                        <button 
-                          onClick={() => openCategorizeModal(shot)}
-                          className="px-4 py-1.5 rounded-full text-xs font-semibold text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 hover:bg-indigo-500/20 transition-all opacity-0 group-hover:opacity-100"
-                        >
-                          Move
-                        </button>
+                        <div className="flex justify-end gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+                          <button 
+                            onClick={() => openCategorizeModal(shot)}
+                            className="px-4 py-1.5 rounded-full text-xs font-semibold text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 hover:bg-indigo-500/20 transition-all"
+                          >
+                            Move
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!shot.video_id || deletingVideoId === shot.video_id}
+                            onClick={() => openDeleteModal(shot)}
+                            className="px-4 py-1.5 rounded-full text-xs font-semibold text-rose-300 bg-rose-500/10 border border-rose-500/20 hover:bg-rose-500/20 transition-all disabled:opacity-40"
+                          >
+                            {deletingVideoId === shot.video_id ? "Deleting..." : "Delete"}
+                          </button>
+                        </div>
                       </td>
                     </tr>
-                  ))}
+                  );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1935,6 +1894,232 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
         </motion.div>
 
       </div>
+
+      <AnimatePresence>
+        {isReviewModalOpen && selectedShot && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 lg:p-8 bg-black/80 backdrop-blur-sm overflow-y-auto"
+            onClick={(e) => { if (e.target === e.currentTarget) setIsReviewModalOpen(false); }}
+          >
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              className="w-full max-w-6xl rounded-2xl flex flex-col border border-slate-700/50 shadow-2xl relative overflow-hidden bg-slate-900 my-auto"
+            >
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-cyan-500 to-transparent opacity-40" />
+              <div className="flex justify-between items-center z-10 px-6 pt-5 pb-4 border-b border-white/5">
+                <h4 className="text-lg font-bold text-white flex items-center gap-3 tracking-tight">
+                  <Video className="w-5 h-5 text-cyan-400" /> Shot Replay - <span className="capitalize">{selectedShot.presentation.replace('_', ' ')}</span>
+                  <span className="px-2 py-0.5 rounded-full bg-slate-800 text-xs font-semibold text-slate-300 ml-2 uppercase tracking-wider">{formatStationLabel(selectedShot.station)}</span>
+                </h4>
+                <div className="flex items-center gap-3">
+                  <div className="flex bg-slate-950/80 rounded-full p-1 border border-white/10 shadow-inner">
+                    <button 
+                      onClick={() => setReplayMode('photo')} 
+                      className={`text-xs font-bold uppercase tracking-wider px-5 py-2 rounded-full transition-all ${replayMode === 'photo' ? 'bg-cyan-500 text-white shadow-[0_0_15px_rgba(6,182,212,0.6)]' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+                    >
+                      Photo
+                    </button>
+                    <button 
+                      onClick={() => setReplayMode('video')} 
+                      className={`text-xs font-bold uppercase tracking-wider px-5 py-2 rounded-full transition-all ${replayMode === 'video' ? 'bg-cyan-500 text-white shadow-[0_0_15px_rgba(6,182,212,0.6)]' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+                    >
+                      Video
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!selectedShot.video_id || deletingVideoId === selectedShot.video_id}
+                    onClick={() => openDeleteModal(selectedShot)}
+                    className="text-rose-200 hover:text-white text-xs font-bold uppercase tracking-wider bg-rose-500/10 border border-rose-500/20 hover:bg-rose-500/30 transition-all px-4 py-2 rounded-full disabled:opacity-40"
+                    title="Delete this clip"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 inline-block mr-1.5 -mt-0.5" />
+                    {deletingVideoId === selectedShot.video_id ? "Deleting..." : "Delete"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsReviewModalOpen(false)}
+                    className="text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-700 transition-all p-2 rounded-full border border-white/10"
+                    title="Close (Esc)"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+              
+              <div className="flex flex-col lg:flex-row gap-6 px-6 pb-6 pt-4">
+                <div className="w-full lg:w-[340px] shrink-0 flex flex-col gap-4">
+                  <div className="rounded-2xl border border-cyan-500/20 bg-cyan-950/20 px-5 py-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+                      <div className="flex items-center gap-2 text-white">
+                        <SlidersHorizontal className="h-4 w-4 text-cyan-400" />
+                        <div className="text-sm font-bold uppercase tracking-[0.16em] text-cyan-200/90">Correct This Shot</div>
+                      </div>
+                      {classificationSavingId === selectedShot.id && (
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-cyan-300 animate-pulse">Saving…</span>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col gap-5">
+                      <div className="space-y-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 flex items-center justify-between">
+                          Outcome
+                          {selectedShot.confidence !== undefined && selectedShot.confidence !== null && (
+                            <span className="text-[9px] text-slate-500">AI Conf: {(selectedShot.confidence * 100).toFixed(0)}%</span>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          {(
+                            [
+                              { typeKey: "hit" as const, api: "break" as const, label: "Break" },
+                              { typeKey: "miss" as const, api: "miss" as const, label: "Miss" },
+                              { typeKey: "unknown" as const, api: "unknown" as const, label: "Unknown" },
+                            ] as const
+                          ).map((opt) => {
+                            const active = selectedShot.type === opt.typeKey;
+                            return (
+                              <button
+                                key={opt.api}
+                                type="button"
+                                disabled={classificationSavingId === selectedShot.id || active}
+                                onClick={() => patchShotClassification(selectedShot.id, { break_label: opt.api })}
+                                className={`rounded-lg border py-2.5 text-xs font-bold uppercase tracking-wider transition-all ${
+                                  active
+                                    ? `${OUTCOME_STYLES[opt.typeKey].badge} cursor-default shadow-md`
+                                    : "border-white/10 bg-slate-900/80 text-slate-400 hover:border-white/25 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-40"
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Station</div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {STATION_OPTIONS.map((opt) => {
+                            const active = stationOptionIsActive(selectedShot.station, opt.value);
+                            return (
+                              <button
+                                key={opt.value}
+                                type="button"
+                                disabled={classificationSavingId === selectedShot.id || active}
+                                onClick={() =>
+                                  patchShotClassification(selectedShot.id, {
+                                    station: opt.value === "unknown" ? "" : opt.value,
+                                  })
+                                }
+                                className={`rounded-lg border py-2 text-xs font-semibold transition-all ${
+                                  active
+                                    ? "border-sky-400/50 bg-sky-500/20 text-sky-100 cursor-default shadow-md"
+                                    : "border-white/10 bg-slate-900/80 text-slate-400 hover:border-white/25 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-40"
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <label
+                          htmlFor={`modal-presentation-${selectedShot.id}`}
+                          className="block text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400"
+                        >
+                          Presentation
+                        </label>
+                        <select
+                          id={`modal-presentation-${selectedShot.id}`}
+                          title="Presentation angle"
+                          disabled={classificationSavingId === selectedShot.id}
+                          value={
+                            PRESENTATION_OPTIONS.some((o) => o.value === selectedShot.presentation)
+                              ? selectedShot.presentation
+                              : selectedShot.presentation || "straight"
+                          }
+                          onChange={(e) => patchShotClassification(selectedShot.id, { presentation: e.target.value })}
+                          className="w-full rounded-xl border border-white/15 bg-slate-950 px-4 py-3 text-sm text-white font-medium focus:outline-none focus:ring-2 focus:ring-cyan-500/50 disabled:opacity-40"
+                        >
+                          {!PRESENTATION_OPTIONS.some((o) => o.value === selectedShot.presentation) &&
+                            selectedShot.presentation && (
+                              <option value={selectedShot.presentation}>
+                                {selectedShot.presentation.replace(/_/g, " ")} (current)
+                              </option>
+                            )}
+                          {PRESENTATION_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="rounded-xl border border-white/5 bg-slate-900/60 px-4 py-3 mt-1 flex justify-between items-center">
+                        <div>
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Pre-trigger</div>
+                          <div className="mt-1 text-sm font-mono text-slate-300">
+                            {selectedShot.pretrigger_time !== null && selectedShot.pretrigger_time !== undefined
+                              ? formatClipOffset(selectedShot.pretrigger_time)
+                              : "N/A"}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Offset</div>
+                          <div className="font-mono text-xs text-slate-400 mt-1">[{selectedShot.x > 0 ? '+' : ''}{selectedShot.x}, {selectedShot.y > 0 ? '+' : ''}{selectedShot.y}]</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="flex-1 bg-black rounded-xl overflow-hidden flex items-center justify-center border border-slate-700/80 shadow-[0_0_30px_rgba(0,0,0,0.8)] relative" style={{ minHeight: "450px", maxHeight: "75vh" }}>
+                  <div
+                    className="relative w-full h-full flex items-center justify-center"
+                  >
+                    <div 
+                      className="relative"
+                      style={{
+                        aspectRatio: overlayAspectRatio,
+                        width: "100%",
+                        maxHeight: "100%",
+                      }}
+                    >
+                      {replayMode === "video" ? (
+                        <video
+                          ref={videoRef}
+                          src={`http://localhost:8000/api/videos/serve?path=${encodeURIComponent(selectedShot.video_path)}`}
+                          controls
+                          autoPlay
+                          muted
+                          playsInline
+                          className="absolute inset-0 h-full w-full object-contain"
+                        />
+                      ) : (
+                        <>
+                          <Image
+                            src={`http://localhost:8000/api/videos/frame?path=${encodeURIComponent(selectedShot.video_path)}&frame_idx=${selectedShot.pretrigger_frame_idx ?? photoFrame?.frame_idx ?? -1}&time_ms=${Math.round((selectedShot.pretrigger_time ?? photoFrame?.time ?? 1) * 1000)}`}
+                            alt="Pre-trigger frame"
+                            fill
+                            unoptimized
+                            className="absolute inset-0 h-full w-full object-contain pointer-events-none"
+                          />
+                          <OverlayBoxes boxes={overlayBoxes} crosshairX={baseCrosshairX} crosshairY={baseCrosshairY} />
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {isCategorizeModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -1991,6 +2176,54 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
 
             <button 
               onClick={() => setIsCategorizeModalOpen(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="relative w-full max-w-md rounded-2xl border border-rose-500/20 bg-slate-900 p-6 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="rounded-full border border-rose-500/20 bg-rose-500/10 p-2">
+                <Trash2 className="h-5 w-5 text-rose-300" />
+              </div>
+              <div>
+                <h3 className="text-xl font-bold text-white">Delete clip?</h3>
+                <p className="mt-2 text-sm leading-relaxed text-slate-400">
+                  This permanently removes the uploaded video, generated replay assets, and extracted shot instance for
+                  <span className="text-slate-200"> {deleteTarget.presentation.replace(/_/g, " ")}</span>.
+                </p>
+                <p className="mt-3 text-xs font-semibold uppercase tracking-[0.16em] text-rose-300/80">
+                  This action cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={deletingVideoId === deleteTarget.video_id}
+                onClick={() => setDeleteTarget(null)}
+                className="rounded-lg px-4 py-2 text-sm text-slate-400 transition-colors hover:text-white disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deletingVideoId === deleteTarget.video_id}
+                onClick={handleDeleteVideo}
+                className="rounded-lg border border-rose-500/20 bg-rose-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-rose-500 disabled:opacity-40"
+              >
+                {deletingVideoId === deleteTarget.video_id ? "Deleting..." : "Delete clip"}
+              </button>
+            </div>
+
+            <button 
+              onClick={() => setDeleteTarget(null)}
               className="absolute top-4 right-4 text-slate-400 hover:text-white"
             >
               ✕

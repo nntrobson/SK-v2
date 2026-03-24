@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { UploadCloud, CheckCircle, Video, ChevronRight } from "lucide-react";
+import { UploadCloud, CheckCircle, Video, ChevronRight, Film, X } from "lucide-react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -15,32 +15,58 @@ const API = getApiBaseUrl();
 const VIDEO_ACCEPT =
   "video/mp4,video/avi,video/quicktime,video/x-msvideo,.mp4,.avi,.mov,.MOV";
 
+type UploadedVideoStatus = {
+  clientKey: string;
+  fileName: string;
+  fileSizeMb: string;
+  videoId: number;
+  status: string;
+  processing: ProcessingPayload;
+};
+
+const TERMINAL_UPLOAD_STATUSES = new Set(["completed", "error", "error_no_shots"]);
+
 export default function UploadPage() {
-  const [file, setFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [videoId, setVideoId] = useState<number | null>(null);
-  const [processing, setProcessing] = useState<ProcessingPayload | null>(null);
+  const [uploadedVideos, setUploadedVideos] = useState<UploadedVideoStatus[]>([]);
   const [dragActive, setDragActive] = useState(false);
 
   useEffect(() => {
-    if (!success || videoId == null) return;
+    if (!success || uploadedVideos.length === 0) return;
+    if (uploadedVideos.every((video) => TERMINAL_UPLOAD_STATUSES.has(video.status))) return;
 
     const idRef: { current: ReturnType<typeof setInterval> | undefined } = {
       current: undefined,
     };
 
     const poll = () => {
-      fetch(`${API}/api/videos/${videoId}/processing-status`)
-        .then((r) => (r.ok ? r.json() : null))
-        .then((j) => {
-          if (!j) return;
-          setProcessing({
-            progress_percent: j.progress_percent,
-            stage: j.stage,
-            eta_seconds: j.eta_seconds,
-          });
-          if (["completed", "error", "error_no_shots"].includes(j.status) && idRef.current) {
+      Promise.all(
+        uploadedVideos.map(async (video) => {
+          if (TERMINAL_UPLOAD_STATUSES.has(video.status)) return video;
+
+          try {
+            const response = await fetch(`${API}/api/videos/${video.videoId}/processing-status`);
+            if (!response.ok) return video;
+            const payload = await response.json();
+            return {
+              ...video,
+              status: typeof payload.status === "string" ? payload.status : video.status,
+              processing: {
+                progress_percent: payload.progress_percent,
+                stage: payload.stage,
+                eta_seconds: payload.eta_seconds,
+              },
+            };
+          } catch {
+            return video;
+          }
+        })
+      )
+        .then((nextVideos) => {
+          setUploadedVideos(nextVideos);
+          if (nextVideos.every((video) => TERMINAL_UPLOAD_STATUSES.has(video.status)) && idRef.current) {
             clearInterval(idRef.current);
           }
         })
@@ -52,25 +78,25 @@ export default function UploadPage() {
     return () => {
       if (idRef.current) clearInterval(idRef.current);
     };
-  }, [success, videoId]);
+  }, [success, uploadedVideos]);
 
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!file) return;
+    if (selectedFiles.length === 0) return;
     
     setUploading(true);
     
     try {
       const formData = new FormData();
-      formData.append("file", file);
+      selectedFiles.forEach((file) => formData.append("files", file));
       
-      const response = await fetch(`${API}/api/videos/upload`, {
+      const response = await fetch(`${API}/api/videos/upload-batch`, {
         method: "POST",
         body: formData,
       });
 
       const raw = await response.text();
-      let data: { video_id?: unknown; detail?: unknown } = {};
+      let data: { video_ids?: unknown; detail?: unknown } = {};
       try {
         data = raw ? JSON.parse(raw) : {};
       } catch {
@@ -87,13 +113,32 @@ export default function UploadPage() {
         throw new Error(detail);
       }
 
-      const vid =
-        typeof data.video_id === "number"
-          ? data.video_id
-          : typeof data.video_id === "string"
-            ? Number(data.video_id)
-            : NaN;
-      setVideoId(Number.isFinite(vid) ? vid : null);
+      const videoIds = Array.isArray(data.video_ids)
+        ? data.video_ids
+            .map((value) =>
+              typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN
+            )
+            .filter((value) => Number.isFinite(value))
+        : [];
+
+      if (videoIds.length !== selectedFiles.length) {
+        throw new Error("Upload completed, but the server returned an unexpected number of video IDs.");
+      }
+
+      setUploadedVideos(
+        selectedFiles.map((file, index) => ({
+          clientKey: `${file.name}-${file.size}-${index}`,
+          fileName: file.name,
+          fileSizeMb: (file.size / 1024 / 1024).toFixed(2),
+          videoId: videoIds[index],
+          status: "pending",
+          processing: {
+            progress_percent: null,
+            stage: "Connecting…",
+            eta_seconds: null,
+          },
+        }))
+      );
       setUploading(false);
       setSuccess(true);
     } catch (error) {
@@ -105,10 +150,14 @@ export default function UploadPage() {
       );
       setUploading(false);
     }
-  }
+  };
 
-  const pickFile = (f: File | undefined | null) => {
-    if (f) setFile(f);
+  const pickFiles = (files: FileList | File[] | undefined | null) => {
+    if (!files) return;
+    const nextFiles = Array.from(files);
+    if (nextFiles.length > 0) {
+      setSelectedFiles(nextFiles);
+    }
   };
 
   const onDragOver = (e: React.DragEvent) => {
@@ -127,9 +176,21 @@ export default function UploadPage() {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
-    const f = e.dataTransfer.files?.[0];
-    pickFile(f);
-  }
+    pickFiles(e.dataTransfer.files);
+  };
+
+  const resetUploader = () => {
+    setSelectedFiles([]);
+    setUploadedVideos([]);
+    setSuccess(false);
+    setUploading(false);
+  };
+
+  const totalSelectedSizeMb = (
+    selectedFiles.reduce((sum, file) => sum + file.size, 0) /
+    1024 /
+    1024
+  ).toFixed(2);
 
   return (
     <motion.div 
@@ -172,30 +233,50 @@ export default function UploadPage() {
             </motion.div>
             <h2 className="text-3xl font-bold text-white mb-4">Pipeline Engaged</h2>
             <p className="text-slate-300 text-lg max-w-md mb-6">
-              Your video is actively rendering. The AI is mapping crosshair coordinates against clay presentations.
+              {uploadedVideos.length === 1
+                ? "Your video is actively rendering. The AI is mapping crosshair coordinates against clay presentations."
+                : `Your ${uploadedVideos.length} videos are actively rendering. The AI is mapping crosshair coordinates against clay presentations.`}
             </p>
-            {processing || videoId != null ? (
-              <div className="w-full max-w-md mb-8 flex justify-center">
-                <ProcessingProgressBar
-                  processing={
-                    processing ?? {
-                      progress_percent: null,
-                      stage: "Connecting…",
-                      eta_seconds: null,
-                    }
-                  }
-                />
-              </div>
-            ) : null}
-            <Link href="/dashboard/sessions">
-              <motion.button 
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                className="bg-white text-slate-900 font-bold px-8 py-3 rounded-full hover:bg-slate-100 transition shadow-[0_0_20px_rgba(255,255,255,0.3)] flex items-center gap-2"
+            <div className="mb-8 grid w-full max-w-3xl gap-3">
+              {uploadedVideos.map((video) => (
+                <div
+                  key={video.clientKey}
+                  className="rounded-2xl border border-white/10 bg-slate-950/50 px-5 py-4 text-left"
+                >
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-white">{video.fileName}</div>
+                      <div className="mt-1 text-xs uppercase tracking-[0.14em] text-slate-500">
+                        {video.fileSizeMb} MB · Video #{video.videoId}
+                      </div>
+                    </div>
+                    <div className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-sky-200">
+                      {video.status}
+                    </div>
+                  </div>
+                  <ProcessingProgressBar processing={video.processing} />
+                </div>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={resetUploader}
+                className="border border-white/10 bg-slate-900/80 px-6 py-3 rounded-full text-white font-semibold hover:bg-slate-800 transition flex items-center gap-2"
               >
-                Enter Film Room <ChevronRight className="w-5 h-5" />
-              </motion.button>
-            </Link>
+                <X className="w-4 h-4" />
+                Upload Another Batch
+              </button>
+              <Link href="/dashboard/sessions">
+                <motion.button 
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  className="bg-white text-slate-900 font-bold px-8 py-3 rounded-full hover:bg-slate-100 transition shadow-[0_0_20px_rgba(255,255,255,0.3)] flex items-center gap-2"
+                >
+                  Enter Film Room <ChevronRight className="w-5 h-5" />
+                </motion.button>
+              </Link>
+            </div>
           </motion.div>
         ) : (
           <motion.form 
@@ -227,10 +308,10 @@ export default function UploadPage() {
               onDragLeave={onDragLeave}
               onDrop={onDrop}
               className={`relative border-2 border-dashed rounded-2xl p-16 flex flex-col items-center justify-center text-center transition-all bg-slate-900/30 overflow-hidden group
-                ${file ? 'border-sky-500 bg-sky-900/20' : 'border-slate-700 hover:border-blue-500/50 hover:bg-slate-800/50'}
+                ${selectedFiles.length > 0 ? 'border-sky-500 bg-sky-900/20' : 'border-slate-700 hover:border-blue-500/50 hover:bg-slate-800/50'}
                 ${dragActive ? 'border-sky-400 bg-sky-900/30 ring-2 ring-sky-500/40' : ''}`}
             >
-              {file && (
+              {selectedFiles.length > 0 && (
                 <div className="absolute inset-0 bg-gradient-to-t from-sky-500/10 to-transparent pointer-events-none" />
               )}
               
@@ -238,30 +319,66 @@ export default function UploadPage() {
                 animate={uploading ? { y: [0, -10, 0] } : {}} 
                 transition={{ repeat: Infinity, duration: 2 }}
               >
-                <UploadCloud className={`w-16 h-16 mb-6 transition-colors ${file ? 'text-sky-400 drop-shadow-[0_0_8px_rgba(56,189,248,0.5)]' : 'text-slate-500 group-hover:text-blue-400'}`} />
+                <UploadCloud className={`w-16 h-16 mb-6 transition-colors ${selectedFiles.length > 0 ? 'text-sky-400 drop-shadow-[0_0_8px_rgba(56,189,248,0.5)]' : 'text-slate-500 group-hover:text-blue-400'}`} />
               </motion.div>
               
               <h3 className="font-bold text-xl text-white mb-2 tracking-wide">
-                {file ? file.name : 'Upload Video'}
+                {selectedFiles.length === 0
+                  ? "Upload Videos"
+                  : selectedFiles.length === 1
+                    ? selectedFiles[0].name
+                    : `${selectedFiles.length} videos selected`}
               </h3>
               <p className="text-slate-400 mb-6 font-light">
-                {file ? `${(file.size / 1024 / 1024).toFixed(2)} MB Payload Ready` : 'Drag ShotKam .mp4 / .avi / .mov here or browse files.'}
+                {selectedFiles.length > 0
+                  ? `${totalSelectedSizeMb} MB queued across ${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"}`
+                  : "Drag ShotKam .mp4 / .avi / .mov files here or browse multiple videos at once."}
               </p>
+
+              {selectedFiles.length > 0 ? (
+                <div className="mb-6 grid w-full max-w-xl gap-2 text-left">
+                  {selectedFiles.slice(0, 5).map((file, index) => (
+                    <div
+                      key={`${file.name}-${file.size}-${index}`}
+                      className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-4 py-2"
+                    >
+                      <div className="flex min-w-0 items-center gap-3">
+                        <Film className="h-4 w-4 shrink-0 text-sky-300" />
+                        <span className="truncate text-sm text-white">{file.name}</span>
+                      </div>
+                      <span className="ml-4 shrink-0 text-xs uppercase tracking-[0.14em] text-slate-500">
+                        {(file.size / 1024 / 1024).toFixed(2)} MB
+                      </span>
+                    </div>
+                  ))}
+                  {selectedFiles.length > 5 ? (
+                    <div className="text-center text-xs uppercase tracking-[0.14em] text-slate-500">
+                      + {selectedFiles.length - 5} more files selected
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               
               <label className="relative overflow-hidden group cursor-pointer">
                 <span className="absolute inset-0 w-full h-full bg-gradient-to-r from-blue-600 to-sky-500 opacity-0 group-hover:opacity-100 transition-opacity" />
                 <span className="relative bg-slate-800 border border-slate-600 text-white font-medium px-6 py-2.5 rounded-full shadow-lg transition-transform hover:scale-105 inline-block">
                   Browse Files
                 </span>
-                <input type="file" accept={VIDEO_ACCEPT} className="hidden" onChange={(e) => pickFile(e.target.files?.[0] || null)} />
+                <input
+                  type="file"
+                  accept={VIDEO_ACCEPT}
+                  multiple
+                  className="hidden"
+                  onChange={(e) => pickFiles(e.target.files)}
+                />
               </label>
             </motion.div>
 
             <button 
               type="submit" 
-              disabled={!file || uploading}
+              disabled={selectedFiles.length === 0 || uploading}
               className={`w-full mt-8 font-bold px-6 py-4 rounded-xl transition-all shadow-lg flex justify-center items-center gap-3 text-lg
-                ${file && !uploading 
+                ${selectedFiles.length > 0 && !uploading 
                   ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-500/25 hover:shadow-blue-500/50' 
                   : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}
             >
@@ -270,7 +387,7 @@ export default function UploadPage() {
                   <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
                   <span className="animate-pulse">Transmitting to Server Array...</span>
                 </>
-              ) : "Commence Scan"}
+              ) : selectedFiles.length > 1 ? `Commence Scan for ${selectedFiles.length} Videos` : "Commence Scan"}
             </button>
           </motion.form>
         )}

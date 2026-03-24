@@ -3,7 +3,7 @@
 import Link from "next/link";
 import React, { useState, useEffect } from "react";
 import { motion, type Variants } from "framer-motion";
-import { Calendar, MapPin, ChevronRight, Activity, Plus } from "lucide-react";
+import { Calendar, MapPin, ChevronRight, Activity, Plus, Trash2 } from "lucide-react";
 import {
   ProcessingProgressBar,
   type ProcessingPayload,
@@ -34,6 +34,26 @@ export default function SessionsPage() {
   const [sessions, setSessions] = useState<SessionData[]>([]);
   const [loading, setLoading] = useState(true);
   const [groupBy, setGroupBy] = useState<"date" | "venue" | "type">("date");
+
+  const handleDeleteSession = async (id: number) => {
+    if (!window.confirm("Are you sure you want to delete this session and all its videos? This action cannot be undone.")) {
+      return;
+    }
+    
+    try {
+      const res = await fetch(`http://localhost:8000/api/sessions/${id}`, {
+        method: "DELETE"
+      });
+      if (res.ok) {
+        setSessions(prev => prev.filter(s => s.id !== id));
+      } else {
+        alert("Failed to delete session");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Error deleting session");
+    }
+  };
 
   useEffect(() => {
     fetch("http://localhost:8000/api/sessions")
@@ -200,9 +220,22 @@ export default function SessionsPage() {
                             )}
                           </td>
                           <td className="px-8 py-6 text-right">
-                            <Link href={`/dashboard/sessions/${session.id}`} className="inline-flex items-center justify-center p-3 rounded-full bg-slate-800 text-slate-300 border border-slate-700 hover:bg-blue-600 hover:text-white hover:border-blue-500 transition-all shadow-md group-hover:shadow-[0_0_15px_rgba(59,130,246,0.3)]">
-                              <ChevronRight className="w-5 h-5" />
-                            </Link>
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  handleDeleteSession(session.id);
+                                }}
+                                className="inline-flex items-center justify-center p-3 rounded-full bg-slate-800 text-slate-300 border border-slate-700 hover:bg-red-600/90 hover:text-white hover:border-red-500 transition-all shadow-md group-hover:shadow-[0_0_15px_rgba(239,68,68,0.3)]"
+                                title="Delete session"
+                              >
+                                <Trash2 className="w-5 h-5" />
+                              </button>
+                              <Link href={`/dashboard/sessions/${session.id}`} className="inline-flex items-center justify-center p-3 rounded-full bg-slate-800 text-slate-300 border border-slate-700 hover:bg-blue-600 hover:text-white hover:border-blue-500 transition-all shadow-md group-hover:shadow-[0_0_15px_rgba(59,130,246,0.3)]">
+                                <ChevronRight className="w-5 h-5" />
+                              </Link>
+                            </div>
                           </td>
                         </motion.tr>
                       ))}

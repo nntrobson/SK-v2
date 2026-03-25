@@ -4,20 +4,11 @@ import Link from "next/link";
 import React from "react";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
-import { Target, LayoutDashboard, ListVideo, UploadCloud, Activity, LogOut } from "lucide-react";
+import { Target, LayoutDashboard, ListVideo, UploadCloud, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { createClient } from "@/lib/supabase/client";
-import { useRouter } from "next/navigation";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const router = useRouter();
-
-  const handleLogout = async () => {
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    router.push('/auth/login');
-  };
 
   const navItems = [
     { name: "Overview", href: "/dashboard", icon: LayoutDashboard },
@@ -65,13 +56,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </nav>
 
           <div className="flex items-center gap-4">
-            <button
-              onClick={handleLogout}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
-            >
-              <LogOut className="w-4 h-4" />
-              Logout
-            </button>
             <div className="h-9 w-9 rounded-full bg-gradient-to-br from-slate-700 to-slate-800 border border-slate-600 flex items-center justify-center text-slate-300 font-semibold cursor-pointer hover:border-slate-400 transition-colors shadow-inner">
               U
             </div>

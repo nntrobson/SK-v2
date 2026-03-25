@@ -6,13 +6,10 @@ export async function GET() {
     const supabase = await createClient();
     
     const { data: { user } } = await supabase.auth.getUser();
-    
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const userId = user?.id || "anonymous";
 
-    // Get sessions with processing info
-    const { data: sessions, error: sessionsError } = await supabase
+    // Get sessions with processing info (all sessions if anonymous)
+    const query = supabase
       .from("sessions")
       .select(`
         id,
@@ -25,8 +22,14 @@ export async function GET() {
         created_at,
         updated_at
       `)
-      .eq("user_id", user.id)
       .order("date", { ascending: false });
+    
+    // Only filter by user_id if we have a real user
+    if (user) {
+      query.eq("user_id", user.id);
+    }
+    
+    const { data: sessions, error: sessionsError } = await query;
 
     if (sessionsError) {
       console.error("Error fetching sessions:", sessionsError);
@@ -41,7 +44,7 @@ export async function GET() {
             .from("videos")
             .select("status, progress_percent, stage, eta_seconds")
             .eq("session_id", session.id)
-            .eq("user_id", user.id);
+            .eq("session_id", session.id);
 
           if (videos && videos.length > 0) {
             // Aggregate progress across all videos
@@ -75,17 +78,13 @@ export async function POST(request: Request) {
     const supabase = await createClient();
     
     const { data: { user } } = await supabase.auth.getUser();
-    
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
 
     const body = await request.json();
     
     const { data: session, error } = await supabase
       .from("sessions")
       .insert({
-        user_id: user.id,
+        user_id: user?.id || null,
         venue: body.venue || "Silver Dollar Club",
         date: body.date || new Date().toISOString().split("T")[0],
         type: body.type || "Trap Singles",

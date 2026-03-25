@@ -48,12 +48,12 @@ export async function updateSession(request: NextRequest) {
   ) {
     // no user, redirect to login page
     const url = request.nextUrl.clone()
-    url.pathname = '/auth/login'
+    url.pathname = '/login'
     return NextResponse.redirect(url)
   }
 
-  // If user is logged in and accessing auth pages, redirect to dashboard
-  if (user && request.nextUrl.pathname.startsWith('/auth')) {
+  // If user is logged in and accessing login/auth pages, redirect to dashboard
+  if (user && (request.nextUrl.pathname === '/login' || request.nextUrl.pathname.startsWith('/auth'))) {
     const url = request.nextUrl.clone()
     url.pathname = '/dashboard'
     return NextResponse.redirect(url)

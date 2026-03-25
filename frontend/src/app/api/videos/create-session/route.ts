@@ -62,8 +62,8 @@ export async function POST(request: Request) {
 
       videoIds.push(video.id);
 
-      // Start simulated processing
-      simulateVideoProcessing(supabase, video.id, session.id, user.id, file.pathname);
+      // Mark video as uploaded
+      markVideoUploaded(supabase, video.id, session.id);
     }
 
     return NextResponse.json({
@@ -76,97 +76,37 @@ export async function POST(request: Request) {
   }
 }
 
-// Simulated video processing - in production this would be a separate job/worker
-async function simulateVideoProcessing(
+// Mark video as uploaded and ready for processing
+// In production, this would trigger actual AI video analysis
+async function markVideoUploaded(
   supabase: Awaited<ReturnType<typeof createClient>>,
   videoId: number,
-  sessionId: number,
-  userId: string,
-  filePath: string
+  sessionId: number
 ) {
-  const stages = [
-    { stage: "Extracting frames", duration: 2000 },
-    { stage: "Detecting shots", duration: 3000 },
-    { stage: "Analyzing trajectories", duration: 2000 },
-    { stage: "Computing coordinates", duration: 2000 },
-    { stage: "Generating insights", duration: 1000 },
-  ];
-
-  let progress = 0;
-  const progressPerStage = 100 / stages.length;
-
-  for (const { stage, duration } of stages) {
-    await supabase
-      .from("videos")
-      .update({
-        stage,
-        progress_percent: Math.round(progress),
-        eta_seconds: Math.round((stages.length * 2) - (progress / 10)),
-      })
-      .eq("id", videoId);
-
-    await new Promise(resolve => setTimeout(resolve, duration));
-    progress += progressPerStage;
-  }
-
-  // Generate sample shots for the video
-  const numShots = Math.floor(Math.random() * 5) + 3;
-  const shots = [];
-
-  for (let i = 0; i < numShots; i++) {
-    const isHit = Math.random() > 0.3;
-    shots.push({
-      video_id: videoId,
-      session_id: sessionId,
-      user_id: userId,
-      x: (Math.random() - 0.5) * 20,
-      y: (Math.random() - 0.5) * 20 + 5,
-      type: isHit ? "hit" : "miss",
-      break_label: isHit ? ["dust", "chip", "solid"][Math.floor(Math.random() * 3)] : null,
-      presentation: ["straight", "hard_left", "hard_right", "moderate_left", "moderate_right"][Math.floor(Math.random() * 5)],
-      station: ["trap-house-1-2", "trap-house", "trap-house-4-5"][Math.floor(Math.random() * 3)],
-      confidence: 0.85 + Math.random() * 0.15,
-      video_path: filePath,
-      clay_x: Math.random() * 100,
-      clay_y: Math.random() * 100,
-      crosshair_x: Math.random() * 100,
-      crosshair_y: Math.random() * 100,
-    });
-  }
-
-  await supabase.from("shots").insert(shots);
-
+  // Mark video as uploaded (awaiting processing)
   await supabase
     .from("videos")
     .update({
-      status: "completed",
+      status: "uploaded",
       progress_percent: 100,
-      stage: "Complete",
+      stage: "Uploaded - Awaiting Analysis",
     })
     .eq("id", videoId);
 
+  // Check if all videos in session are uploaded
   const { data: sessionVideos } = await supabase
     .from("videos")
     .select("status")
     .eq("session_id", sessionId);
 
-  const allComplete = sessionVideos?.every(v => v.status === "completed");
+  const allUploaded = sessionVideos?.every(v => v.status === "uploaded");
 
-  if (allComplete) {
-    const { data: sessionShots } = await supabase
-      .from("shots")
-      .select("type")
-      .eq("session_id", sessionId);
-
-    const hits = sessionShots?.filter(s => s.type === "hit").length || 0;
-    const total = sessionShots?.length || 0;
-
+  if (allUploaded) {
+    // Mark session as ready for analysis (score/total remain 0 until real analysis)
     await supabase
       .from("sessions")
       .update({
-        status: "complete",
-        score: hits,
-        total: total,
+        status: "uploaded",
       })
       .eq("id", sessionId);
   }

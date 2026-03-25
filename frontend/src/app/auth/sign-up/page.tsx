@@ -1,6 +1,0 @@
-// Redirect to new signup page
-import { redirect } from 'next/navigation'
-
-export default function SignUpPage() {
-  redirect('/signup')
-}

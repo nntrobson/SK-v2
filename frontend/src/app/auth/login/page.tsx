@@ -50,7 +50,7 @@ export default function LoginPage() {
         <CardHeader className="space-y-2 text-center">
           <div className="flex items-center justify-center gap-2 mb-2">
             <Target className="w-8 h-8 text-orange-500" />
-            <span className="text-2xl font-bold text-white">ShotTracker</span>
+            <span className="text-2xl font-bold text-white">ShotVision</span>
           </div>
           <CardTitle className="text-2xl text-white">Sign In</CardTitle>
           <CardDescription className="text-slate-400">

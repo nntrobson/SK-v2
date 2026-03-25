@@ -9,7 +9,7 @@ export default function AuthErrorPage() {
         <CardHeader className="space-y-2">
           <div className="flex items-center justify-center gap-2 mb-2">
             <Target className="w-8 h-8 text-orange-500" />
-            <span className="text-2xl font-bold text-white">ShotTracker</span>
+            <span className="text-2xl font-bold text-white">ShotVision</span>
           </div>
           <div className="flex justify-center mb-4">
             <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center">

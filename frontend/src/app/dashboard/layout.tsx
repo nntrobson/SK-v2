@@ -39,7 +39,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-sky-400 flex items-center justify-center text-white shadow-lg shadow-blue-500/20 group-hover:shadow-blue-500/40 transition-shadow">
               <Target className="w-5 h-5 text-white" />
             </div>
-            <span className="font-bold text-xl tracking-tight text-white">Shot<span className="text-blue-400">Tracker</span></span>
+            <span className="font-bold text-xl tracking-tight text-white">Shot<span className="text-blue-400">Vision</span></span>
           </Link>
           
           <nav className="flex items-center gap-2">

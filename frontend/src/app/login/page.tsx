@@ -14,7 +14,6 @@ export default function LoginPage() {
   const router = useRouter()
 
   async function doSignIn() {
-    console.log("[v0] doSignIn called with email:", email)
     if (!email || !password) {
       setError("Please enter email and password")
       return
@@ -25,22 +24,19 @@ export default function LoginPage() {
 
     try {
       const supabase = createClient()
-      console.log("[v0] Calling Supabase signInWithPassword...")
-      const { error: authError, data } = await supabase.auth.signInWithPassword({
+      const { error: authError } = await supabase.auth.signInWithPassword({
         email,
         password,
       })
-      console.log("[v0] Supabase response:", { authError, user: data?.user?.email })
       
       if (authError) {
         setError(authError.message)
         return
       }
       
-      console.log("[v0] Success! Redirecting to dashboard...")
       router.push("/dashboard")
+      router.refresh()
     } catch (err) {
-      console.log("[v0] Caught error:", err)
       setError(err instanceof Error ? err.message : "An error occurred")
     } finally {
       setLoading(false)

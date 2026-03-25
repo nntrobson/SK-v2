@@ -1,17 +1,6 @@
 "use client"
 
 import { createClient } from "@/lib/supabase/client"
-
-import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useState } from "react"
@@ -24,9 +13,8 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const router = useRouter()
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    console.log("[v0] Sign in form submitted", { email })
+  async function handleSignIn() {
+    console.log("[v0] Sign in clicked", { email })
     setLoading(true)
     setError(null)
 
@@ -51,58 +39,66 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-4">
-      <Card className="w-full max-w-md bg-slate-900/80 border-slate-800">
-        <CardHeader className="space-y-2 text-center">
-          <div className="flex items-center justify-center gap-2 mb-2">
+      <div className="w-full max-w-md bg-slate-900/80 border border-slate-800 rounded-xl p-8">
+        <div className="text-center mb-6">
+          <div className="flex items-center justify-center gap-2 mb-4">
             <Target className="w-8 h-8 text-orange-500" />
             <span className="text-2xl font-bold text-white">ShotVision</span>
           </div>
-          <CardTitle className="text-2xl text-white">Sign In</CardTitle>
-          <CardDescription className="text-slate-400">
-            Enter your credentials to access your account
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {error && (
-              <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
-                {error}
-              </div>
-            )}
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
+          <h1 className="text-2xl font-bold text-white">Sign In</h1>
+          <p className="text-slate-400 mt-2">Enter your credentials to access your account</p>
+        </div>
+        
+        <div className="space-y-4">
+          {error && (
+            <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+              {error}
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "Signing in..." : "Sign In"}
-            </Button>
-          </form>
-          <div className="mt-6 text-center text-sm text-slate-400">
-            {"Don't have an account? "}
-            <Link href="/auth/sign-up" className="text-orange-400 hover:text-orange-300 font-medium">
-              Sign up
-            </Link>
+          )}
+          
+          <div className="space-y-2">
+            <label htmlFor="email" className="block text-sm font-medium text-slate-200">Email</label>
+            <input
+              id="email"
+              type="email"
+              placeholder="you@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full h-10 px-3 rounded-md border border-slate-700 bg-slate-800 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              required
+            />
           </div>
-        </CardContent>
-      </Card>
+          
+          <div className="space-y-2">
+            <label htmlFor="password" className="block text-sm font-medium text-slate-200">Password</label>
+            <input
+              id="password"
+              type="password"
+              placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full h-10 px-3 rounded-md border border-slate-700 bg-slate-800 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              required
+            />
+          </div>
+          
+          <button 
+            type="button"
+            onClick={handleSignIn}
+            className="w-full h-10 px-4 py-2 rounded-md text-sm font-medium bg-blue-600 text-white hover:bg-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={loading}
+          >
+            {loading ? "Signing in..." : "Sign In"}
+          </button>
+        </div>
+        
+        <div className="mt-6 text-center text-sm text-slate-400">
+          {"Don't have an account? "}
+          <Link href="/auth/sign-up" className="text-orange-400 hover:text-orange-300 font-medium">
+            Sign up
+          </Link>
+        </div>
+      </div>
     </div>
   )
 }

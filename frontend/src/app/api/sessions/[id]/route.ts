@@ -1,5 +1,12 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient as createServerClient } from "@supabase/supabase-js";
 import { type NextRequest, NextResponse } from "next/server";
+
+// Create a service role client that bypasses RLS
+function createServiceClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  return createServerClient(supabaseUrl, supabaseServiceKey);
+}
 
 export async function GET(
   request: NextRequest,
@@ -7,19 +14,12 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const supabase = await createClient();
-    
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const supabase = createServiceClient();
 
     const { data: session, error } = await supabase
       .from("sessions")
       .select("id, venue, date, type, score, total, status")
       .eq("id", parseInt(id))
-      .eq("user_id", user.id)
       .single();
 
     if (error || !session) {
@@ -39,13 +39,7 @@ export async function PUT(
 ) {
   try {
     const { id } = await params;
-    const supabase = await createClient();
-    
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const supabase = createServiceClient();
 
     const body = await request.json();
     
@@ -60,7 +54,6 @@ export async function PUT(
         status: body.status,
       })
       .eq("id", parseInt(id))
-      .eq("user_id", user.id)
       .select()
       .single();
 
@@ -82,20 +75,13 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const supabase = await createClient();
-    
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const supabase = createServiceClient();
 
     // Delete session (cascades to videos and shots)
     const { error } = await supabase
       .from("sessions")
       .delete()
-      .eq("id", parseInt(id))
-      .eq("user_id", user.id);
+      .eq("id", parseInt(id));
 
     if (error) {
       console.error("Error deleting session:", error);

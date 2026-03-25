@@ -1,15 +1,19 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient as createServerClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+
+// Create a service role client that bypasses RLS
+function createServiceClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  return createServerClient(supabaseUrl, supabaseServiceKey);
+}
 
 export async function GET() {
   try {
-    const supabase = await createClient();
-    
-    const { data: { user } } = await supabase.auth.getUser();
-    const userId = user?.id || "anonymous";
+    const supabase = createServiceClient();
 
-    // Get sessions with processing info (all sessions if anonymous)
-    const query = supabase
+    // Get all sessions
+    const { data: sessions, error: sessionsError } = await supabase
       .from("sessions")
       .select(`
         id,
@@ -23,13 +27,6 @@ export async function GET() {
         updated_at
       `)
       .order("date", { ascending: false });
-    
-    // Only filter by user_id if we have a real user
-    if (user) {
-      query.eq("user_id", user.id);
-    }
-    
-    const { data: sessions, error: sessionsError } = await query;
 
     if (sessionsError) {
       console.error("Error fetching sessions:", sessionsError);
@@ -43,7 +40,6 @@ export async function GET() {
           const { data: videos } = await supabase
             .from("videos")
             .select("status, progress_percent, stage, eta_seconds")
-            .eq("session_id", session.id)
             .eq("session_id", session.id);
 
           if (videos && videos.length > 0) {
@@ -75,16 +71,14 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const supabase = await createClient();
-    
-    const { data: { user } } = await supabase.auth.getUser();
+    const supabase = createServiceClient();
 
     const body = await request.json();
     
     const { data: session, error } = await supabase
       .from("sessions")
       .insert({
-        user_id: user?.id || null,
+        user_id: null, // Anonymous
         venue: body.venue || "Silver Dollar Club",
         date: body.date || new Date().toISOString().split("T")[0],
         type: body.type || "Trap Singles",

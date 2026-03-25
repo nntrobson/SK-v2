@@ -4,31 +4,57 @@ import React, { useState, useEffect } from "react";
 import { UploadCloud, CheckCircle, Video, ChevronRight, Film, X } from "lucide-react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { upload } from "@vercel/blob/client";
 import {
   ProcessingProgressBar,
   type ProcessingPayload,
 } from "@/components/dashboard/ProcessingProgressBar";
 
-// Upload file directly to Vercel Blob using client upload (v2)
-// File goes directly from browser to Blob storage - bypasses serverless function limits
+// Upload file to server using FormData with XHR for progress tracking
 async function uploadFileWithProgress(
   file: File,
   onProgress: (percent: number) => void
 ): Promise<{ pathname: string; url: string }> {
-  const blob = await upload(file.name, file, {
-    access: "private",
-    handleUploadUrl: "/api/videos/upload",
-    onUploadProgress: (progressEvent) => {
-      const percent = Math.round((progressEvent.loaded / progressEvent.total) * 100);
-      onProgress(percent);
-    },
-  });
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const formData = new FormData();
+    formData.append("file", file);
 
-  return {
-    pathname: blob.pathname,
-    url: blob.url,
-  };
+    xhr.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) {
+        const percent = Math.round((event.loaded / event.total) * 100);
+        onProgress(percent);
+      }
+    });
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const response = JSON.parse(xhr.responseText);
+          if (response.error) {
+            reject(new Error(response.error));
+          } else {
+            resolve(response);
+          }
+        } catch {
+          reject(new Error("Invalid response"));
+        }
+      } else {
+        try {
+          const error = JSON.parse(xhr.responseText);
+          reject(new Error(error.error || `Upload failed with status ${xhr.status}`));
+        } catch {
+          reject(new Error(`Upload failed with status ${xhr.status}`));
+        }
+      }
+    });
+
+    xhr.addEventListener("error", () => {
+      reject(new Error("Network error during upload"));
+    });
+
+    xhr.open("POST", "/api/videos/upload");
+    xhr.send(formData);
+  });
 }
 
 const VIDEO_ACCEPT =

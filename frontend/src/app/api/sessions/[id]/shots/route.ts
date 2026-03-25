@@ -1,5 +1,12 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient as createServerClient } from "@supabase/supabase-js";
 import { type NextRequest, NextResponse } from "next/server";
+
+// Create a service role client that bypasses RLS
+function createServiceClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  return createServerClient(supabaseUrl, supabaseServiceKey);
+}
 
 export async function GET(
   request: NextRequest,
@@ -7,13 +14,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const supabase = await createClient();
-    
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const supabase = createServiceClient();
 
     const { data: shots, error } = await supabase
       .from("shots")
@@ -40,7 +41,6 @@ export async function GET(
         video_id
       `)
       .eq("session_id", parseInt(id))
-      .eq("user_id", user.id)
       .order("id", { ascending: true });
 
     if (error) {

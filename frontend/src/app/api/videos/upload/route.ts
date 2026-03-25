@@ -1,51 +1,49 @@
-import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
+import { put } from "@vercel/blob";
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+
+export const runtime = "edge";
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const body = (await request.json()) as HandleUploadBody;
-
   try {
-    // Authenticate user first
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const formData = await request.formData();
+    const file = formData.get("file") as File | null;
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!file) {
+      return NextResponse.json({ error: "No file provided" }, { status: 400 });
     }
 
-    const jsonResponse = await handleUpload({
-      body,
-      request,
-      onBeforeGenerateToken: async (pathname) => {
-        // User is already authenticated above
-        return {
-          allowedContentTypes: [
-            "video/mp4",
-            "video/quicktime", 
-            "video/x-msvideo",
-            "video/avi",
-            "application/octet-stream",
-          ],
-          addRandomSuffix: true,
-          tokenPayload: JSON.stringify({
-            userId: user.id,
-          }),
-        };
-      },
-      onUploadCompleted: async ({ blob, tokenPayload }) => {
-        // Called by Vercel's servers after upload completes
-        // Note: Won't work in local dev without ngrok
-        console.log("Upload completed:", blob.pathname);
-      },
+    // Validate file type
+    const allowedTypes = [
+      "video/mp4",
+      "video/quicktime",
+      "video/x-msvideo",
+      "video/avi",
+      "application/octet-stream",
+    ];
+    
+    if (file.type && !allowedTypes.includes(file.type)) {
+      return NextResponse.json({ error: "Invalid file type" }, { status: 400 });
+    }
+
+    // Generate a unique filename
+    const timestamp = Date.now();
+    const pathname = `videos/${timestamp}-${file.name}`;
+
+    // Upload to Vercel Blob
+    const blob = await put(pathname, file.stream(), {
+      access: "private",
+      contentType: file.type || "video/mp4",
     });
 
-    return NextResponse.json(jsonResponse);
+    return NextResponse.json({
+      pathname: blob.pathname,
+      url: blob.url,
+    });
   } catch (error) {
-    console.error("Upload handler error:", error);
+    console.error("Upload error:", error);
     return NextResponse.json(
       { error: (error as Error).message },
-      { status: 400 }
+      { status: 500 }
     );
   }
 }

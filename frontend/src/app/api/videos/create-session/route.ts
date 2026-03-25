@@ -1,14 +1,16 @@
-import { createClient } from "@/lib/supabase/server";
+import { createClient as createServerClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+
+// Create a service role client that bypasses RLS for anonymous uploads
+function createServiceClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  return createServerClient(supabaseUrl, supabaseServiceKey);
+}
 
 export async function POST(request: Request) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const supabase = createServiceClient();
 
     const { files } = await request.json();
 
@@ -16,11 +18,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No files provided" }, { status: 400 });
     }
 
-    // Create a new session for this batch
+    // Generate a guest visitor ID for anonymous uploads
+    const visitorId = `guest-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+
+    // Create a new session for this batch (no user_id for anonymous)
     const { data: session, error: sessionError } = await supabase
       .from("sessions")
       .insert({
-        user_id: user.id,
+        user_id: null, // Anonymous upload
         venue: "Silver Dollar Club",
         date: new Date().toISOString().split("T")[0],
         type: "Trap Singles",
@@ -44,7 +49,7 @@ export async function POST(request: Request) {
         .from("videos")
         .insert({
           session_id: session.id,
-          user_id: user.id,
+          user_id: null, // Anonymous upload
           file_name: file.name,
           file_path: file.pathname,
           file_size_mb: parseFloat((file.size / 1024 / 1024).toFixed(2)),
@@ -63,7 +68,7 @@ export async function POST(request: Request) {
       videoIds.push(video.id);
 
       // Mark video as uploaded
-      markVideoUploaded(supabase, video.id, session.id);
+      await markVideoUploaded(supabase, video.id, session.id);
     }
 
     return NextResponse.json({
@@ -77,9 +82,8 @@ export async function POST(request: Request) {
 }
 
 // Mark video as uploaded and ready for processing
-// In production, this would trigger actual AI video analysis
 async function markVideoUploaded(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  supabase: ReturnType<typeof createServiceClient>,
   videoId: number,
   sessionId: number
 ) {
@@ -102,7 +106,7 @@ async function markVideoUploaded(
   const allUploaded = sessionVideos?.every(v => v.status === "uploaded");
 
   if (allUploaded) {
-    // Mark session as ready for analysis (score/total remain 0 until real analysis)
+    // Mark session as ready for analysis
     await supabase
       .from("sessions")
       .update({

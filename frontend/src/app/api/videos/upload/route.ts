@@ -1,38 +1,58 @@
 import { put } from "@vercel/blob";
 import { NextResponse } from "next/server";
 
+// Use edge runtime for streaming uploads without body size limits
 export const runtime = "edge";
+
+// Disable body parsing - we'll stream directly
+export const dynamic = "force-dynamic";
 
 export async function POST(request: Request): Promise<NextResponse> {
   try {
-    const formData = await request.formData();
-    const file = formData.get("file") as File | null;
-
-    if (!file) {
-      return NextResponse.json({ error: "No file provided" }, { status: 400 });
-    }
-
-    // Validate file type
-    const allowedTypes = [
-      "video/mp4",
-      "video/quicktime",
-      "video/x-msvideo",
-      "video/avi",
-      "application/octet-stream",
-    ];
+    const contentType = request.headers.get("content-type") || "";
     
-    if (file.type && !allowedTypes.includes(file.type)) {
-      return NextResponse.json({ error: "Invalid file type" }, { status: 400 });
+    // Handle multipart form data
+    if (contentType.includes("multipart/form-data")) {
+      const formData = await request.formData();
+      const file = formData.get("file") as File | null;
+
+      if (!file) {
+        return NextResponse.json({ error: "No file provided" }, { status: 400 });
+      }
+
+      // Generate unique pathname
+      const timestamp = Date.now();
+      const pathname = `videos/${timestamp}-${file.name}`;
+
+      // Upload using multipart for large files
+      const blob = await put(pathname, file, {
+        access: "private",
+        multipart: true,
+        contentType: file.type || "video/mp4",
+      });
+
+      return NextResponse.json({
+        pathname: blob.pathname,
+        url: blob.url,
+      });
+    }
+    
+    // Handle raw body upload (for XHR with headers)
+    const filename = request.headers.get("x-filename") || `video-${Date.now()}.mp4`;
+    const videoContentType = request.headers.get("x-content-type") || "video/mp4";
+    
+    const body = request.body;
+    if (!body) {
+      return NextResponse.json({ error: "No body provided" }, { status: 400 });
     }
 
-    // Generate a unique filename
     const timestamp = Date.now();
-    const pathname = `videos/${timestamp}-${file.name}`;
+    const pathname = `videos/${timestamp}-${decodeURIComponent(filename)}`;
 
-    // Upload to Vercel Blob
-    const blob = await put(pathname, file.stream(), {
+    const blob = await put(pathname, body, {
       access: "private",
-      contentType: file.type || "video/mp4",
+      multipart: true,
+      contentType: videoContentType,
     });
 
     return NextResponse.json({

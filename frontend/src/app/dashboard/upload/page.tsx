@@ -9,15 +9,13 @@ import {
   type ProcessingPayload,
 } from "@/components/dashboard/ProcessingProgressBar";
 
-// Upload file to server using FormData with XHR for progress tracking
+// Upload file using XHR with raw body streaming for progress tracking
 async function uploadFileWithProgress(
   file: File,
   onProgress: (percent: number) => void
 ): Promise<{ pathname: string; url: string }> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const formData = new FormData();
-    formData.append("file", file);
 
     xhr.upload.addEventListener("progress", (event) => {
       if (event.lengthComputable) {
@@ -53,7 +51,9 @@ async function uploadFileWithProgress(
     });
 
     xhr.open("POST", "/api/videos/upload");
-    xhr.send(formData);
+    xhr.setRequestHeader("x-filename", encodeURIComponent(file.name));
+    xhr.setRequestHeader("x-content-type", file.type || "video/mp4");
+    xhr.send(file);
   });
 }
 

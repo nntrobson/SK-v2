@@ -48,7 +48,6 @@ export default function SignUpPage() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 flex items-center justify-center p-6">
       <div className="w-full max-w-md">
-        {/* Logo */}
         <div className="flex items-center justify-center gap-3 mb-8">
           <div className="relative">
             <div className="absolute inset-0 bg-orange-500/20 rounded-full blur-xl" />
@@ -56,10 +55,9 @@ export default function SignUpPage() {
               <Target className="w-8 h-8 text-white" />
             </div>
           </div>
-          <span className="text-2xl font-bold text-white">ShotTracker</span>
+          <span className="text-2xl font-bold text-white tracking-tight">ShotTracker</span>
         </div>
 
-        {/* Card */}
         <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 rounded-2xl p-8 shadow-xl">
           <div className="mb-6">
             <h1 className="text-2xl font-bold text-white mb-2">Create account</h1>

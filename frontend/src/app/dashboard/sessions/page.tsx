@@ -41,7 +41,7 @@ export default function SessionsPage() {
     }
     
     try {
-      const res = await fetch(`http://localhost:8000/api/sessions/${id}`, {
+      const res = await fetch(`/api/sessions/${id}`, {
         method: "DELETE"
       });
       if (res.ok) {
@@ -56,10 +56,12 @@ export default function SessionsPage() {
   };
 
   useEffect(() => {
-    fetch("http://localhost:8000/api/sessions")
+    fetch("/api/sessions")
       .then((res) => res.json())
       .then((data) => {
-        setSessions(data);
+        if (Array.isArray(data)) {
+          setSessions(data);
+        }
         setLoading(false);
       })
       .catch((err) => {
@@ -73,9 +75,13 @@ export default function SessionsPage() {
   useEffect(() => {
     if (!hasProcessing) return;
     const id = setInterval(() => {
-      fetch("http://localhost:8000/api/sessions")
+      fetch("/api/sessions")
         .then((res) => res.json())
-        .then((data) => setSessions(data))
+        .then((data) => {
+          if (Array.isArray(data)) {
+            setSessions(data);
+          }
+        })
         .catch(console.error);
     }, 2000);
     return () => clearInterval(id);

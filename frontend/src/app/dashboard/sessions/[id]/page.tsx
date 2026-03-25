@@ -929,7 +929,7 @@ const ValidationPanel = ({ shots }: { shots: ShotData[] }) => {
 
   const fetchRuns = () => {
     setLoading(true);
-    fetch("http://localhost:8000/api/validation/packages")
+    fetch("/api/validation/packages")
       .then((res) => res.json())
       .then((data: ValidationRun[]) => setRuns(data))
       .catch(() => {})
@@ -937,7 +937,7 @@ const ValidationPanel = ({ shots }: { shots: ShotData[] }) => {
   };
 
   useEffect(() => {
-    fetch("http://localhost:8000/api/validation/packages")
+    fetch("/api/validation/packages")
       .then((res) => res.json())
       .then((data: ValidationRun[]) => setRuns(data))
       .catch(() => {})
@@ -946,7 +946,7 @@ const ValidationPanel = ({ shots }: { shots: ShotData[] }) => {
 
   const handleGenerate = (videoId: number) => {
     setGenerating(videoId);
-    fetch(`http://localhost:8000/api/validation/generate?video_id=${videoId}`, { method: "POST" })
+    fetch(`/api/validation/generate?video_id=${videoId}`, { method: "POST" })
       .then((res) => res.json())
       .then(() => {
         setTimeout(fetchRuns, 3000);
@@ -1085,7 +1085,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
   ) => {
     setClassificationSavingId(shotId);
     try {
-      const res = await fetch(`http://localhost:8000/api/shots/${shotId}`, {
+      const res = await fetch(`/api/shots/${shotId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
@@ -1129,8 +1129,8 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
 
   useEffect(() => {
     Promise.all([
-      fetch(`http://localhost:8000/api/sessions/${unwrappedParams.id}/shots`).then(res => res.json()),
-      fetch(`http://localhost:8000/api/sessions/${unwrappedParams.id}`).then(res => res.json())
+      fetch(`/api/sessions/${unwrappedParams.id}/shots`).then(res => res.json()),
+      fetch(`/api/sessions/${unwrappedParams.id}`).then(res => res.json())
     ])
       .then(([shots, info]) => {
         const sessionShots = shots as ShotData[];
@@ -1185,7 +1185,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
 
   const handleUpdateSession = async () => {
     try {
-      const res = await fetch(`http://localhost:8000/api/sessions/${unwrappedParams.id}`, {
+      const res = await fetch(`/api/sessions/${unwrappedParams.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(editForm)
@@ -1204,7 +1204,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
     setIsCategorizeModalOpen(true);
     setNewCategorizeName("");
     try {
-      const res = await fetch("http://localhost:8000/api/sessions");
+      const res = await fetch("/api/sessions");
       if (res.ok) {
         const data = await res.json() as SessionInfo[];
         setAllSessions(data.filter((session) => session.id !== parseInt(unwrappedParams.id, 10)));
@@ -1225,7 +1225,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
 
     try {
       const payload = targetSessionId ? { session_id: targetSessionId } : { new_event_name: newName };
-      const res = await fetch(`http://localhost:8000/api/videos/${videoId}/move`, {
+      const res = await fetch(`/api/videos/${videoId}/move`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
@@ -1251,7 +1251,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
 
     setDeletingVideoId(videoId);
     try {
-      const res = await fetch(`http://localhost:8000/api/videos/${videoId}`, {
+      const res = await fetch(`/api/videos/${videoId}`, {
         method: "DELETE",
       });
       if (!res.ok) {
@@ -2093,7 +2093,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                       {replayMode === "video" ? (
                         <video
                           ref={videoRef}
-                          src={`http://localhost:8000/api/videos/serve?path=${encodeURIComponent(selectedShot.video_path)}`}
+                          src={`/api/videos/serve?path=${encodeURIComponent(selectedShot.video_path)}`}
                           controls
                           autoPlay
                           muted
@@ -2103,7 +2103,7 @@ export default function SessionAnalyticsPage({ params }: { params: Promise<{ id:
                       ) : (
                         <>
                           <Image
-                            src={`http://localhost:8000/api/videos/frame?path=${encodeURIComponent(selectedShot.video_path)}&frame_idx=${selectedShot.pretrigger_frame_idx ?? photoFrame?.frame_idx ?? -1}&time_ms=${Math.round((selectedShot.pretrigger_time ?? photoFrame?.time ?? 1) * 1000)}`}
+                            src={`/api/videos/frame?path=${encodeURIComponent(selectedShot.video_path)}&frame_idx=${selectedShot.pretrigger_frame_idx ?? photoFrame?.frame_idx ?? -1}&time_ms=${Math.round((selectedShot.pretrigger_time ?? photoFrame?.time ?? 1) * 1000)}`}
                             alt="Pre-trigger frame"
                             fill
                             unoptimized

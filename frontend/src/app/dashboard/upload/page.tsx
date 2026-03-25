@@ -4,13 +4,32 @@ import React, { useState, useEffect } from "react";
 import { UploadCloud, CheckCircle, Video, ChevronRight, Film, X } from "lucide-react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
+import { upload } from "@vercel/blob/client";
 import {
   ProcessingProgressBar,
   type ProcessingPayload,
 } from "@/components/dashboard/ProcessingProgressBar";
-import { getApiBaseUrl } from "@/lib/api-base";
 
-const API = getApiBaseUrl();
+// Upload file directly to Vercel Blob using client upload (v2)
+// File goes directly from browser to Blob storage - bypasses serverless function limits
+async function uploadFileWithProgress(
+  file: File,
+  onProgress: (percent: number) => void
+): Promise<{ pathname: string; url: string }> {
+  const blob = await upload(file.name, file, {
+    access: "private",
+    handleUploadUrl: "/api/videos/upload",
+    onUploadProgress: (progressEvent) => {
+      const percent = Math.round((progressEvent.loaded / progressEvent.total) * 100);
+      onProgress(percent);
+    },
+  });
+
+  return {
+    pathname: blob.pathname,
+    url: blob.url,
+  };
+}
 
 const VIDEO_ACCEPT =
   "video/mp4,video/avi,video/quicktime,video/x-msvideo,.mp4,.avi,.mov,.MOV";
@@ -24,10 +43,18 @@ type UploadedVideoStatus = {
   processing: ProcessingPayload;
 };
 
+type UploadingFile = {
+  file: File;
+  progress: number;
+  status: "pending" | "uploading" | "complete" | "error";
+  pathname?: string;
+};
+
 const TERMINAL_UPLOAD_STATUSES = new Set(["completed", "error", "error_no_shots"]);
 
 export default function UploadPage() {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [uploadingFiles, setUploadingFiles] = useState<UploadingFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [uploadedVideos, setUploadedVideos] = useState<UploadedVideoStatus[]>([]);
@@ -47,7 +74,7 @@ export default function UploadPage() {
           if (TERMINAL_UPLOAD_STATUSES.has(video.status)) return video;
 
           try {
-            const response = await fetch(`${API}/api/videos/${video.videoId}/processing-status`);
+            const response = await fetch(`/api/videos/${video.videoId}/processing-status`);
             if (!response.ok) return video;
             const payload = await response.json();
             return {
@@ -86,51 +113,75 @@ export default function UploadPage() {
     
     setUploading(true);
     
+    // Initialize uploading files state
+    const initialUploadingFiles: UploadingFile[] = selectedFiles.map(file => ({
+      file,
+      progress: 0,
+      status: "pending",
+    }));
+    setUploadingFiles(initialUploadingFiles);
+
     try {
-      const formData = new FormData();
-      selectedFiles.forEach((file) => formData.append("files", file));
-      
-      const response = await fetch(`${API}/api/videos/upload-batch`, {
+      // Upload each file directly to Blob storage
+      const uploadedFileInfo: { name: string; pathname: string; size: number }[] = [];
+
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        
+        // Update status to uploading
+        setUploadingFiles(prev => prev.map((f, idx) => 
+          idx === i ? { ...f, status: "uploading" } : f
+        ));
+
+        try {
+          const result = await uploadFileWithProgress(file, (percent) => {
+            setUploadingFiles(prev => prev.map((f, idx) => 
+              idx === i ? { ...f, progress: percent } : f
+            ));
+          });
+
+          uploadedFileInfo.push({
+            name: file.name,
+            pathname: result.pathname,
+            size: file.size,
+          });
+
+          // Update status to complete
+          setUploadingFiles(prev => prev.map((f, idx) => 
+            idx === i ? { ...f, status: "complete", progress: 100, pathname: result.pathname } : f
+          ));
+        } catch (uploadError) {
+          console.error(`Failed to upload ${file.name}:`, uploadError);
+          setUploadingFiles(prev => prev.map((f, idx) => 
+            idx === i ? { ...f, status: "error" } : f
+          ));
+        }
+      }
+
+      if (uploadedFileInfo.length === 0) {
+        throw new Error("No files were uploaded successfully");
+      }
+
+      // Now create the session with all uploaded files
+      const sessionResponse = await fetch("/api/videos/create-session", {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files: uploadedFileInfo }),
       });
 
-      const raw = await response.text();
-      let data: { video_ids?: unknown; detail?: unknown } = {};
-      try {
-        data = raw ? JSON.parse(raw) : {};
-      } catch {
-        /* ignore */
+      if (!sessionResponse.ok) {
+        const errorData = await sessionResponse.json();
+        throw new Error(errorData.error || "Failed to create session");
       }
 
-      if (!response.ok) {
-        const detail =
-          typeof data.detail === "string"
-            ? data.detail
-            : Array.isArray(data.detail)
-              ? data.detail.map((d) => (d as { msg?: string }).msg).join(", ")
-              : raw || `HTTP ${response.status}`;
-        throw new Error(detail);
-      }
-
-      const videoIds = Array.isArray(data.video_ids)
-        ? data.video_ids
-            .map((value) =>
-              typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN
-            )
-            .filter((value) => Number.isFinite(value))
-        : [];
-
-      if (videoIds.length !== selectedFiles.length) {
-        throw new Error("Upload completed, but the server returned an unexpected number of video IDs.");
-      }
+      const { video_ids } = await sessionResponse.json();
 
       setUploadedVideos(
-        selectedFiles.map((file, index) => ({
+        uploadedFileInfo.map((file, index) => ({
           clientKey: `${file.name}-${file.size}-${index}`,
           fileName: file.name,
           fileSizeMb: (file.size / 1024 / 1024).toFixed(2),
-          videoId: videoIds[index],
+          videoId: video_ids[index],
           status: "pending",
           processing: {
             progress_percent: null,
@@ -142,12 +193,9 @@ export default function UploadPage() {
       setUploading(false);
       setSuccess(true);
     } catch (error) {
-      console.error("Transmission failed:", error);
-      const msg =
-        error instanceof Error ? error.message : "Upload failed.";
-      alert(
-        `Upload failed: ${msg}\n\nCheck that the API is running (${API}) and the database schema is up to date (alembic upgrade head in /backend).`
-      );
+      console.error("Upload failed:", error);
+      const msg = error instanceof Error ? error.message : "Upload failed.";
+      alert(`Upload failed: ${msg}`);
       setUploading(false);
     }
   };
@@ -157,6 +205,7 @@ export default function UploadPage() {
     const nextFiles = Array.from(files);
     if (nextFiles.length > 0) {
       setSelectedFiles(nextFiles);
+      setUploadingFiles([]);
     }
   };
 
@@ -182,6 +231,7 @@ export default function UploadPage() {
   const resetUploader = () => {
     setSelectedFiles([]);
     setUploadedVideos([]);
+    setUploadingFiles([]);
     setSuccess(false);
     setUploading(false);
   };
@@ -337,20 +387,42 @@ export default function UploadPage() {
 
               {selectedFiles.length > 0 ? (
                 <div className="mb-6 grid w-full max-w-xl gap-2 text-left">
-                  {selectedFiles.slice(0, 5).map((file, index) => (
-                    <div
-                      key={`${file.name}-${file.size}-${index}`}
-                      className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/50 px-4 py-2"
-                    >
-                      <div className="flex min-w-0 items-center gap-3">
-                        <Film className="h-4 w-4 shrink-0 text-sky-300" />
-                        <span className="truncate text-sm text-white">{file.name}</span>
+                  {selectedFiles.slice(0, 5).map((file, index) => {
+                    const uploadingFile = uploadingFiles[index];
+                    return (
+                      <div
+                        key={`${file.name}-${file.size}-${index}`}
+                        className="rounded-xl border border-white/10 bg-slate-950/50 px-4 py-2"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <Film className="h-4 w-4 shrink-0 text-sky-300" />
+                            <span className="truncate text-sm text-white">{file.name}</span>
+                          </div>
+                          <span className="ml-4 shrink-0 text-xs uppercase tracking-[0.14em] text-slate-500">
+                            {(file.size / 1024 / 1024).toFixed(2)} MB
+                          </span>
+                        </div>
+                        {uploadingFile && uploadingFile.status === "uploading" && (
+                          <div className="mt-2">
+                            <div className="h-1 bg-slate-700 rounded-full overflow-hidden">
+                              <div 
+                                className="h-full bg-sky-500 transition-all duration-300"
+                                style={{ width: `${uploadingFile.progress}%` }}
+                              />
+                            </div>
+                            <div className="mt-1 text-xs text-slate-500">{uploadingFile.progress}% uploaded</div>
+                          </div>
+                        )}
+                        {uploadingFile && uploadingFile.status === "complete" && (
+                          <div className="mt-1 text-xs text-green-400">Uploaded</div>
+                        )}
+                        {uploadingFile && uploadingFile.status === "error" && (
+                          <div className="mt-1 text-xs text-red-400">Failed</div>
+                        )}
                       </div>
-                      <span className="ml-4 shrink-0 text-xs uppercase tracking-[0.14em] text-slate-500">
-                        {(file.size / 1024 / 1024).toFixed(2)} MB
-                      </span>
-                    </div>
-                  ))}
+                    );
+                  })}
                   {selectedFiles.length > 5 ? (
                     <div className="text-center text-xs uppercase tracking-[0.14em] text-slate-500">
                       + {selectedFiles.length - 5} more files selected
@@ -385,7 +457,7 @@ export default function UploadPage() {
               {uploading ? (
                 <>
                   <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                  <span className="animate-pulse">Transmitting to Server Array...</span>
+                  <span className="animate-pulse">Uploading to Cloud Storage...</span>
                 </>
               ) : selectedFiles.length > 1 ? `Commence Scan for ${selectedFiles.length} Videos` : "Commence Scan"}
             </button>

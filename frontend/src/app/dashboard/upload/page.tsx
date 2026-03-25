@@ -10,8 +10,8 @@ import {
   type ProcessingPayload,
 } from "@/components/dashboard/ProcessingProgressBar";
 
-// Upload file directly to Vercel Blob using client upload
-// The file goes directly from browser to Blob storage (bypasses serverless function limits)
+// Upload file directly to Vercel Blob using client upload (v2)
+// File goes directly from browser to Blob storage - bypasses serverless function limits
 async function uploadFileWithProgress(
   file: File,
   onProgress: (percent: number) => void

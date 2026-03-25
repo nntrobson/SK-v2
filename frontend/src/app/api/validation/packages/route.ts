@@ -12,8 +12,8 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Return empty packages list - this would be populated with actual validation data
-    return NextResponse.json({ packages: [] });
+    // Return empty array - this would be populated with actual validation data
+    return NextResponse.json([]);
   } catch (error) {
     console.error("Error fetching validation packages:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });

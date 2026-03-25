@@ -4,95 +4,30 @@ import React, { useState, useEffect } from "react";
 import { UploadCloud, CheckCircle, Video, ChevronRight, Film, X } from "lucide-react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
+import { upload } from "@vercel/blob/client";
 import {
   ProcessingProgressBar,
   type ProcessingPayload,
 } from "@/components/dashboard/ProcessingProgressBar";
 
-// Chunk size for multipart upload (4MB each - avoids 413 errors)
-const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB
-
-// Upload file using chunked multipart upload to avoid body size limits
+// Upload file using Vercel Blob client upload - files go directly from browser to Blob storage
 async function uploadFileWithProgress(
   file: File,
   onProgress: (percent: number) => void
 ): Promise<{ pathname: string; url: string }> {
-  // Step 1: Initialize multipart upload
-  const initRes = await fetch("/api/videos/upload", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      action: "init",
-      filename: file.name,
-      contentType: file.type || "video/mp4",
-    }),
+  const blob = await upload(file.name, file, {
+    access: "private",
+    handleUploadUrl: "/api/videos/upload",
+    onUploadProgress: (progressEvent) => {
+      const percent = Math.round((progressEvent.loaded / progressEvent.total) * 100);
+      onProgress(percent);
+    },
   });
 
-  if (!initRes.ok) {
-    const err = await initRes.json();
-    throw new Error(err.error || "Failed to initialize upload");
-  }
-
-  const { uploadId, key } = await initRes.json();
-
-  // Step 2: Upload file in chunks
-  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-  const parts: { partNumber: number; etag: string }[] = [];
-
-  for (let i = 0; i < totalChunks; i++) {
-    const start = i * CHUNK_SIZE;
-    const end = Math.min(start + CHUNK_SIZE, file.size);
-    const chunk = file.slice(start, end);
-    
-    // Convert chunk to base64
-    const buffer = await chunk.arrayBuffer();
-    const base64 = btoa(
-      new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), "")
-    );
-
-    const partRes = await fetch("/api/videos/upload", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "uploadPart",
-        key,
-        uploadId,
-        partNumber: i + 1,
-        chunk: base64,
-      }),
-    });
-
-    if (!partRes.ok) {
-      const err = await partRes.json();
-      throw new Error(err.error || `Failed to upload part ${i + 1}`);
-    }
-
-    const part = await partRes.json();
-    parts.push({ partNumber: part.partNumber, etag: part.etag });
-
-    // Update progress
-    const percent = Math.round(((i + 1) / totalChunks) * 100);
-    onProgress(percent);
-  }
-
-  // Step 3: Complete multipart upload
-  const completeRes = await fetch("/api/videos/upload", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      action: "complete",
-      key,
-      uploadId,
-      parts,
-    }),
-  });
-
-  if (!completeRes.ok) {
-    const err = await completeRes.json();
-    throw new Error(err.error || "Failed to complete upload");
-  }
-
-  return completeRes.json();
+  return {
+    pathname: blob.pathname,
+    url: blob.url,
+  };
 }
 
 const VIDEO_ACCEPT =

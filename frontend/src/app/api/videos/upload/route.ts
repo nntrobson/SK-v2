@@ -1,61 +1,42 @@
-import { createMultipartUpload, uploadPart, completeMultipartUpload } from "@vercel/blob";
+import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { NextResponse } from "next/server";
 
 export async function POST(request: Request): Promise<NextResponse> {
+  const body = (await request.json()) as HandleUploadBody;
+
   try {
-    const body = await request.json();
-    const { action } = body;
+    const jsonResponse = await handleUpload({
+      body,
+      request,
+      onBeforeGenerateToken: async (pathname) => {
+        // Allow anonymous uploads for now (auth is disabled)
+        return {
+          allowedContentTypes: [
+            "video/mp4",
+            "video/quicktime",
+            "video/x-msvideo",
+            "video/avi",
+            "application/octet-stream",
+          ],
+          addRandomSuffix: true,
+          tokenPayload: JSON.stringify({
+            visitorId: `guest-${Date.now()}`,
+          }),
+        };
+      },
+      onUploadCompleted: async ({ blob, tokenPayload }) => {
+        // This callback is called by Vercel's servers after upload completes
+        // Note: Won't work in local dev without ngrok - that's OK
+        console.log("Upload completed:", blob.pathname);
+      },
+    });
 
-    // Step 1: Initialize multipart upload
-    if (action === "init") {
-      const { filename, contentType } = body;
-      const pathname = `videos/guest/${Date.now()}-${filename}`;
-      
-      const multipartUpload = await createMultipartUpload(pathname, {
-        access: "private",
-        contentType: contentType || "video/mp4",
-      });
-
-      return NextResponse.json({
-        uploadId: multipartUpload.uploadId,
-        key: multipartUpload.key,
-        pathname,
-      });
-    }
-
-    // Step 2: Upload a single part (called for each chunk)
-    if (action === "uploadPart") {
-      const { key, uploadId, partNumber, chunk } = body;
-      
-      // chunk is base64 encoded
-      const buffer = Buffer.from(chunk, "base64");
-      
-      const part = await uploadPart(key, uploadId, partNumber, buffer);
-
-      return NextResponse.json({
-        partNumber: part.partNumber,
-        etag: part.etag,
-      });
-    }
-
-    // Step 3: Complete multipart upload
-    if (action === "complete") {
-      const { key, uploadId, parts } = body;
-      
-      const blob = await completeMultipartUpload(key, uploadId, parts);
-
-      return NextResponse.json({
-        pathname: blob.pathname,
-        url: blob.url,
-      });
-    }
-
-    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+    return NextResponse.json(jsonResponse);
   } catch (error) {
-    console.error("Upload error:", error);
+    console.error("Upload handler error:", error);
     return NextResponse.json(
       { error: (error as Error).message },
-      { status: 500 }
+      { status: 400 }
     );
   }
 }
